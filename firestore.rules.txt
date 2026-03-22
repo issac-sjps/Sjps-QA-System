@@ -1,0 +1,22 @@
+// 貼到 Firebase Console → Firestore → 規則
+// =============================================
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // 測驗：只有建立者可以讀寫，學生可以公開讀取
+    match /quizzes/{quizId} {
+      allow read: if true;  // 學生需要讀取題目
+      allow create: if request.auth != null;
+      allow update, delete: if request.auth != null
+        && request.auth.uid == resource.data.teacherId;
+    }
+
+    // 學生作答：任何人可以新增，只有老師可以查看
+    match /responses/{responseId} {
+      allow create: if true;  // 學生不需登入就能提交
+      allow read: if request.auth != null;
+      allow update, delete: if false;  // 不允許修改作答紀錄
+    }
+  }
+}
