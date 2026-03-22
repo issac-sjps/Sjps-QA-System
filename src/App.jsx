@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react'
 import { auth, db, googleProvider } from './firebase.js'
 import { signInWithPopup, signOut, onAuthStateChanged } from 'firebase/auth'
 import {
-  collection, addDoc, getDocs, getDoc, doc,
+  collection, addDoc, getDocs, getDoc, doc, deleteDoc, setDoc,
   query, where, serverTimestamp
 } from 'firebase/firestore'
 import * as XLSX from 'xlsx'
@@ -218,6 +218,13 @@ tr:hover td{background:#f9f8f6}
 .toast{position:fixed;bottom:24px;right:24px;background:#1a1714;color:white;padding:12px 20px;
   border-radius:8px;font-size:14px;z-index:1000;box-shadow:0 4px 20px rgba(0,0,0,.3);animation:slideUp .3s ease}
 @keyframes slideUp{from{transform:translateY(20px);opacity:0}to{transform:translateY(0);opacity:1}}
+.modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:200;display:flex;align-items:center;justify-content:center;padding:16px}
+.modal-box{background:white;border-radius:16px;padding:28px;width:100%;max-width:400px;box-shadow:0 20px 60px rgba(0,0,0,.3)}
+.modal-title{font-size:18px;font-weight:700;margin-bottom:8px}
+.modal-sub{font-size:14px;color:var(--ink2);margin-bottom:24px;line-height:1.6}
+.modal-actions{display:flex;gap:10px;justify-content:flex-end}
+.btn-danger-solid{background:var(--danger);color:white;border:none}
+.btn-danger-solid:hover:not(:disabled){background:#a33a0c;transform:translateY(-1px)}
 .loading{display:flex;align-items:center;justify-content:center;min-height:200px;font-size:14px;color:var(--ink2);gap:10px}
 .spinner{width:20px;height:20px;border:2px solid var(--border);border-top-color:var(--accent);border-radius:50%;animation:spin .7s linear infinite}
 @keyframes spin{to{transform:rotate(360deg)}}
@@ -264,6 +271,63 @@ function scoreBadgeClass(s) { return s >= 80 ? 'score-high' : s >= 60 ? 'score-m
 
 function Toast({ msg }) {
   return <div className="toast">✓ {msg}</div>
+}
+
+// ─── Confirm Delete Modal ─────────────────────────────────────────────────────
+function ConfirmModal({ title, message, onConfirm, onCancel }) {
+  return (
+    <div className="modal-overlay" onClick={onCancel}>
+      <div className="modal-box" onClick={e => e.stopPropagation()}>
+        <div className="modal-title">🗑️ {title}</div>
+        <div className="modal-sub">{message}</div>
+        <div className="modal-actions">
+          <button className="btn btn-secondary" onClick={onCancel}>取消</button>
+          <button className="btn btn-danger-solid" onClick={onConfirm}>確認刪除</button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ─── Profile Edit Modal ───────────────────────────────────────────────────────
+function ProfileModal({ user, displayName, onSave, onCancel }) {
+  const [name, setName] = useState(displayName || user?.displayName || '')
+  const [saving, setSaving] = useState(false)
+
+  const handleSave = async () => {
+    if (!name.trim()) return
+    setSaving(true)
+    try {
+      await setDoc(doc(db, 'users', user.uid), {
+        displayName: name.trim(),
+        email: user.email,
+        updatedAt: serverTimestamp(),
+      }, { merge: true })
+      onSave(name.trim())
+    } catch(e) { console.error(e) }
+    setSaving(false)
+  }
+
+  return (
+    <div className="modal-overlay" onClick={onCancel}>
+      <div className="modal-box" onClick={e => e.stopPropagation()}>
+        <div className="modal-title">✏️ 修改顯示名稱</div>
+        <div style={{marginBottom:20}}>
+          <label className="form-label">你的名稱（學生看不到，僅管理員後台顯示）</label>
+          <input className="form-input" placeholder="例：王小明老師" value={name}
+            onChange={e => setName(e.target.value)}
+            onKeyDown={e => e.key === 'Enter' && handleSave()}
+            autoFocus/>
+        </div>
+        <div className="modal-actions">
+          <button className="btn btn-secondary" onClick={onCancel}>取消</button>
+          <button className="btn btn-primary" onClick={handleSave} disabled={saving || !name.trim()}>
+            {saving ? '儲存中...' : '儲存'}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
 }
 
 // ─── Parse rows helper (shared by Excel & Paste) ─────────────────────────────
@@ -379,9 +443,10 @@ function LoginPage() {
 }
 
 // ─── Sidebar ──────────────────────────────────────────────────────────────────
-function Sidebar({ hash, user, onLogout }) {
+function Sidebar({ hash, user, displayName, onLogout, onEditProfile }) {
   const admin = isAdmin(user)
-  const initial = user?.displayName?.[0] || user?.email?.[0] || '?'
+  const showName = displayName || user?.displayName || user?.email || ''
+  const initial = showName[0] || '?'
   const teacherNav = [
     { path:'/',         icon:'◉', label:'我的測驗' },
     { path:'/create',   icon:'＋', label:'新增測驗' },
@@ -416,8 +481,11 @@ function Sidebar({ hash, user, onLogout }) {
       </div>
       <div className="sidebar-user">
         <div className={`user-avatar ${admin?'admin-avatar':''}`}>{initial.toUpperCase()}</div>
-        <div style={{overflow:'hidden'}}>
-          <div className="user-name">{user?.displayName || user?.email}</div>
+        <div style={{overflow:'hidden',flex:1}}>
+          <div className="user-name">{showName}</div>
+          <div style={{fontSize:11,color:'rgba(255,255,255,.3)',cursor:'pointer',marginTop:1}} onClick={onEditProfile}>
+            ✏️ 修改名稱
+          </div>
         </div>
         <div className="logout-btn" onClick={onLogout}>登出</div>
       </div>
@@ -551,6 +619,8 @@ function Dashboard({ user }) {
   const [responseCounts, setResponseCounts] = useState({})
   const [loading, setLoading] = useState(true)
   const [toast, setToast] = useState('')
+  const [deleteTarget, setDeleteTarget] = useState(null) // {id, title}
+  const [deleting, setDeleting] = useState(false)
 
   useEffect(() => {
     async function load() {
@@ -560,7 +630,6 @@ function Dashboard({ user }) {
         const list = snap.docs.map(d => ({ id:d.id, ...d.data() }))
           .sort((a,b) => (b.createdAt?.seconds||0) - (a.createdAt?.seconds||0))
         setQuizzes(list)
-        // load response counts
         const counts = {}
         await Promise.all(list.map(async quiz => {
           const rs = await getDocs(query(collection(db,'responses'), where('quizId','==',quiz.id)))
@@ -577,6 +646,23 @@ function Dashboard({ user }) {
     const url = `${window.location.origin}${window.location.pathname}#/s/${id}`
     navigator.clipboard.writeText(url)
     setToast('連結已複製！'); setTimeout(() => setToast(''), 2000)
+  }
+
+  const handleDeleteConfirm = async () => {
+    if (!deleteTarget) return
+    setDeleting(true)
+    try {
+      // 刪除所有學生作答紀錄
+      const rSnap = await getDocs(query(collection(db,'responses'), where('quizId','==',deleteTarget.id)))
+      await Promise.all(rSnap.docs.map(d => deleteDoc(d.ref)))
+      // 刪除測驗本身
+      await deleteDoc(doc(db,'quizzes',deleteTarget.id))
+      setQuizzes(prev => prev.filter(q => q.id !== deleteTarget.id))
+      setToast(`「${deleteTarget.title}」已刪除`)
+      setTimeout(() => setToast(''), 2500)
+    } catch(e) { console.error(e); alert('刪除失敗') }
+    setDeleting(false)
+    setDeleteTarget(null)
   }
 
   if (loading) return <div className="loading"><div className="spinner"/>載入中...</div>
@@ -597,7 +683,13 @@ function Dashboard({ user }) {
         <div className="quiz-grid">
           {quizzes.map(q => (
             <div key={q.id} className="quiz-card">
-              <div className="quiz-tag-pill">{q.subject || '未分類'}</div>
+              <div style={{display:'flex',alignItems:'flex-start',justifyContent:'space-between',marginBottom:8}}>
+                <div className="quiz-tag-pill">{q.subject || '未分類'}</div>
+                <button
+                  onClick={() => setDeleteTarget({id:q.id, title:q.title})}
+                  style={{background:'none',border:'none',cursor:'pointer',fontSize:14,color:'var(--ink2)',padding:'2px 4px',borderRadius:4,lineHeight:1}}
+                  title="刪除測驗">🗑️</button>
+              </div>
               <div className="quiz-name">{q.title}</div>
               <div className="quiz-meta">
                 <span>📝 {q.questions?.length || 0} 題</span>
@@ -620,6 +712,14 @@ function Dashboard({ user }) {
         </div>
       )}
       {toast && <Toast msg={toast}/>}
+      {deleteTarget && (
+        <ConfirmModal
+          title="刪除測驗"
+          message={`確定要刪除「${deleteTarget.title}」嗎？\n此測驗的所有學生作答紀錄也會一併刪除，無法復原。`}
+          onConfirm={handleDeleteConfirm}
+          onCancel={() => setDeleteTarget(null)}
+        />
+      )}
     </div>
   )
 }
@@ -1254,9 +1354,21 @@ function StudentQuiz({ quizId }) {
 // ─── App ──────────────────────────────────────────────────────────────────────
 export default function App() {
   const [user, setUser] = useState(undefined)
+  const [displayName, setDisplayName] = useState('')
+  const [showProfile, setShowProfile] = useState(false)
   const hash = useHash()
 
   useEffect(() => { return onAuthStateChanged(auth, u => setUser(u||null)) }, [])
+
+  // Load custom display name from Firestore when user logs in
+  useEffect(() => {
+    if (!user) return
+    getDoc(doc(db, 'users', user.uid)).then(snap => {
+      if (snap.exists() && snap.data().displayName) {
+        setDisplayName(snap.data().displayName)
+      }
+    }).catch(() => {})
+  }, [user])
 
   const isStudentRoute = hash.startsWith('/s/')
 
@@ -1275,20 +1387,29 @@ export default function App() {
   const handleLogout = () => signOut(auth)
 
   let content
-  if (hash.startsWith('/results/'))   content = <Results quizId={hash.replace('/results/','')}/>
+  if (hash.startsWith('/results/'))        content = <Results quizId={hash.replace('/results/','')}/>
   else if (hash.startsWith('/analytics/')) content = <Analytics quizId={hash.replace('/analytics/','')}/>
-  else if (hash === '/create')         content = <CreateQuiz user={user}/>
+  else if (hash === '/create')             content = <CreateQuiz user={user}/>
   else if (hash === '/admin' && isAdmin(user)) content = <AdminPanel/>
-  else                                 content = <Dashboard user={user}/>
+  else                                     content = <Dashboard user={user}/>
 
   return (
     <><style>{css}</style>
       <div className="app">
         <div className="layout">
-          <Sidebar hash={hash} user={user} onLogout={handleLogout}/>
+          <Sidebar hash={hash} user={user} displayName={displayName}
+            onLogout={handleLogout} onEditProfile={() => setShowProfile(true)}/>
           <div className="main">{content}</div>
         </div>
       </div>
+      {showProfile && (
+        <ProfileModal
+          user={user}
+          displayName={displayName}
+          onSave={(name) => { setDisplayName(name); setShowProfile(false) }}
+          onCancel={() => setShowProfile(false)}
+        />
+      )}
     </>
   )
 }
