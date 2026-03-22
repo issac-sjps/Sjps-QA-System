@@ -1,28 +1,28 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect } from 'react'
 import { auth, db, googleProvider } from './firebase.js'
 import { signInWithPopup, signOut, onAuthStateChanged } from 'firebase/auth'
 import {
   collection, addDoc, getDocs, getDoc, doc,
-  query, where, orderBy, serverTimestamp, Timestamp
+  query, where, orderBy, serverTimestamp
 } from 'firebase/firestore'
 import * as XLSX from 'xlsx'
 
+// ─── Admin emails ─────────────────────────────────────────────────────────────
+const ADMIN_EMAILS = ['issac@sjps.kh.edu.tw']
+const isAdmin = (user) => user && ADMIN_EMAILS.includes(user.email)
+
 // ─── Hash Router ──────────────────────────────────────────────────────────────
-function getHash() {
-  return window.location.hash.replace('#', '') || '/'
-}
+function getHash() { return window.location.hash.replace('#', '') || '/' }
 function useHash() {
   const [hash, setHash] = useState(getHash)
   useEffect(() => {
-    const handler = () => setHash(getHash())
-    window.addEventListener('hashchange', handler)
-    return () => window.removeEventListener('hashchange', handler)
+    const h = () => setHash(getHash())
+    window.addEventListener('hashchange', h)
+    return () => window.removeEventListener('hashchange', h)
   }, [])
   return hash
 }
-function navigate(path) {
-  window.location.hash = path
-}
+function navigate(path) { window.location.hash = path }
 
 // ─── CSS ──────────────────────────────────────────────────────────────────────
 const css = `
@@ -31,12 +31,11 @@ const css = `
 :root{
   --bg:#f0ede8;--surface:#faf9f7;--border:#e2ddd8;
   --ink:#1a1714;--ink2:#6b6560;--accent:#2d6a4f;--accent2:#52b788;
-  --danger:#c1440e;--warn:#d4a017;--radius:12px;--shadow:0 2px 12px rgba(0,0,0,.08)
+  --danger:#c1440e;--warn:#d4a017;--admin:#5b4fcf;
+  --radius:12px;--shadow:0 2px 12px rgba(0,0,0,.08)
 }
 body{font-family:'Noto Sans TC',sans-serif;background:var(--bg);color:var(--ink)}
 .app{min-height:100vh}
-
-/* Login */
 .login-page{min-height:100vh;display:flex;align-items:center;justify-content:center;
   background:linear-gradient(135deg,#1a1714 0%,#2d4a3e 50%,#1a1714 100%);position:relative}
 .login-page::before{content:'';position:absolute;inset:0;
@@ -44,55 +43,53 @@ body{font-family:'Noto Sans TC',sans-serif;background:var(--bg);color:var(--ink)
              radial-gradient(ellipse at 70% 20%,rgba(212,160,23,.1) 0%,transparent 50%)}
 .login-card{background:rgba(250,249,247,.97);border-radius:20px;padding:48px;width:420px;
   position:relative;box-shadow:0 24px 80px rgba(0,0,0,.4)}
-.login-logo{font-size:13px;font-weight:500;color:var(--ink2);letter-spacing:.2em;
-  text-transform:uppercase;margin-bottom:32px}
+.login-logo{font-size:13px;font-weight:500;color:var(--ink2);letter-spacing:.2em;text-transform:uppercase;margin-bottom:32px}
 .login-title{font-size:28px;font-weight:700;margin-bottom:8px;line-height:1.2}
 .login-sub{font-size:14px;color:var(--ink2);margin-bottom:36px}
 .google-btn{width:100%;display:flex;align-items:center;justify-content:center;gap:12px;
   padding:14px 20px;background:white;border:1.5px solid var(--border);border-radius:10px;
-  font-size:15px;font-weight:500;cursor:pointer;transition:all .2s;
-  font-family:'Noto Sans TC',sans-serif;color:var(--ink)}
+  font-size:15px;font-weight:500;cursor:pointer;transition:all .2s;font-family:'Noto Sans TC',sans-serif;color:var(--ink)}
 .google-btn:hover{border-color:var(--accent);box-shadow:0 4px 16px rgba(45,106,79,.15);transform:translateY(-1px)}
 .google-btn:disabled{opacity:.6;cursor:not-allowed;transform:none}
 .login-features{margin-top:32px;display:flex;flex-direction:column;gap:10px}
 .feat-item{display:flex;align-items:center;gap:10px;font-size:13px;color:var(--ink2)}
 .feat-dot{width:6px;height:6px;border-radius:50%;background:var(--accent2);flex-shrink:0}
-
-/* Layout */
 .layout{display:flex;min-height:100vh}
-.sidebar{width:240px;background:#1a1714;flex-shrink:0;display:flex;flex-direction:column;
-  position:fixed;height:100vh;z-index:10}
+.sidebar{width:240px;background:#1a1714;flex-shrink:0;display:flex;flex-direction:column;position:fixed;height:100vh;z-index:10}
 .sidebar-brand{padding:24px 20px;border-bottom:1px solid rgba(255,255,255,.08)}
 .brand-name{font-size:16px;font-weight:700;color:white}
 .brand-sub{font-size:11px;color:rgba(255,255,255,.4);margin-top:2px;letter-spacing:.1em;text-transform:uppercase}
+.admin-badge{display:inline-block;background:var(--admin);color:white;font-size:10px;font-weight:700;
+  padding:2px 7px;border-radius:10px;letter-spacing:.05em;margin-top:4px}
 .sidebar-nav{flex:1;padding:16px 12px;display:flex;flex-direction:column;gap:4px}
 .nav-item{display:flex;align-items:center;gap:10px;padding:10px 12px;border-radius:8px;
   font-size:14px;color:rgba(255,255,255,.6);cursor:pointer;transition:all .15s}
 .nav-item:hover{background:rgba(255,255,255,.06);color:white}
 .nav-item.active{background:var(--accent);color:white}
+.nav-item.admin-nav.active{background:var(--admin)}
 .nav-icon{font-size:16px;width:20px;text-align:center}
 .sidebar-user{padding:16px 20px;border-top:1px solid rgba(255,255,255,.08);display:flex;align-items:center;gap:10px}
 .user-avatar{width:32px;height:32px;border-radius:50%;background:var(--accent);
   display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:700;color:white;flex-shrink:0}
-.user-name{font-size:13px;color:rgba(255,255,255,.8);font-weight:500;
-  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:100px}
-.logout-btn{margin-left:auto;font-size:12px;color:rgba(255,255,255,.3);
-  cursor:pointer;padding:4px;border-radius:4px;flex-shrink:0}
+.user-avatar.admin-avatar{background:var(--admin)}
+.user-name{font-size:13px;color:rgba(255,255,255,.8);font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:110px}
+.logout-btn{margin-left:auto;font-size:12px;color:rgba(255,255,255,.3);cursor:pointer;padding:4px;border-radius:4px;flex-shrink:0}
 .logout-btn:hover{color:rgba(255,255,255,.7)}
 .main{flex:1;margin-left:240px;padding:32px;max-width:calc(100% - 240px)}
-
-/* Common */
 .page-header{display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:28px}
 .page-title{font-size:24px;font-weight:700}
 .page-sub{font-size:14px;color:var(--ink2);margin-top:4px}
 .btn{display:inline-flex;align-items:center;gap:6px;padding:10px 18px;border-radius:8px;
-  font-size:14px;font-weight:500;cursor:pointer;border:none;transition:all .15s;
-  font-family:'Noto Sans TC',sans-serif}
-.btn:disabled{opacity:.5;cursor:not-allowed;transform:none!important}
+  font-size:14px;font-weight:500;cursor:pointer;border:none;transition:all .15s;font-family:'Noto Sans TC',sans-serif}
+.btn:disabled{opacity:.5;cursor:not-allowed}
 .btn-primary{background:var(--accent);color:white}
 .btn-primary:hover:not(:disabled){background:#235c42;transform:translateY(-1px);box-shadow:0 4px 12px rgba(45,106,79,.3)}
 .btn-secondary{background:white;color:var(--ink);border:1.5px solid var(--border)}
 .btn-secondary:hover:not(:disabled){border-color:var(--accent);color:var(--accent)}
+.btn-admin{background:var(--admin);color:white}
+.btn-admin:hover:not(:disabled){background:#4a3fb5;transform:translateY(-1px)}
+.btn-excel{background:#1d6f42;color:white}
+.btn-excel:hover:not(:disabled){background:#155232;transform:translateY(-1px);box-shadow:0 4px 12px rgba(29,111,66,.3)}
 .btn-sm{padding:6px 12px;font-size:13px}
 .card{background:var(--surface);border-radius:var(--radius);border:1px solid var(--border);padding:24px}
 .tabs{display:flex;gap:4px;background:#f0ede8;border-radius:10px;padding:4px;margin-bottom:20px;width:fit-content}
@@ -121,20 +118,17 @@ tr:hover td{background:#f9f8f6}
 .stat-value{font-size:28px;font-weight:700}
 .stat-sub{font-size:12px;color:var(--ink2);margin-top:4px}
 .quiz-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:16px}
-.quiz-card{background:var(--surface);border-radius:var(--radius);border:1px solid var(--border);
-  padding:20px;cursor:pointer;transition:all .2s}
+.quiz-card{background:var(--surface);border-radius:var(--radius);border:1px solid var(--border);padding:20px;transition:all .2s}
 .quiz-card:hover{border-color:var(--accent2);box-shadow:0 4px 20px rgba(45,106,79,.12);transform:translateY(-2px)}
-.quiz-tag-pill{display:inline-block;padding:3px 10px;border-radius:20px;font-size:11px;
-  font-weight:600;background:#e8f5ee;color:var(--accent);margin-bottom:10px}
+.quiz-tag-pill{display:inline-block;padding:3px 10px;border-radius:20px;font-size:11px;font-weight:600;background:#e8f5ee;color:var(--accent);margin-bottom:10px}
 .quiz-name{font-size:16px;font-weight:700;margin-bottom:6px}
 .quiz-meta{font-size:12px;color:var(--ink2);display:flex;gap:12px;flex-wrap:wrap}
 .quiz-url{margin-top:12px;background:#f5f3ef;border-radius:6px;padding:8px 10px;
-  font-family:'DM Mono',monospace;font-size:11px;color:var(--ink2);
-  display:flex;align-items:center;justify-content:space-between;gap:8px}
+  font-family:'DM Mono',monospace;font-size:11px;color:var(--ink2);display:flex;align-items:center;justify-content:space-between;gap:8px}
 .copy-btn{font-size:11px;color:var(--accent);cursor:pointer;font-weight:600;flex-shrink:0}
 .new-quiz-card{background:transparent;border-radius:var(--radius);border:2px dashed var(--border);
-  padding:20px;cursor:pointer;transition:all .2s;display:flex;align-items:center;
-  justify-content:center;gap:8px;color:var(--ink2);font-size:14px;font-weight:500;min-height:140px}
+  padding:20px;cursor:pointer;transition:all .2s;display:flex;align-items:center;justify-content:center;
+  gap:8px;color:var(--ink2);font-size:14px;font-weight:500;min-height:140px}
 .new-quiz-card:hover{border-color:var(--accent);color:var(--accent);background:#f0f9f4}
 .q-editor{border:1.5px solid var(--border);border-radius:10px;padding:18px;margin-bottom:12px;background:white}
 .q-editor-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px}
@@ -166,12 +160,9 @@ tr:hover td{background:#f9f8f6}
 .q-opt-chip{font-size:11px;padding:3px 8px;border-radius:4px;background:white;border:1px solid var(--border);color:var(--ink2)}
 .q-opt-chip.correct{background:#e8f5ee;border-color:var(--accent2);color:var(--accent);font-weight:600}
 .answer-dots{display:flex;gap:4px}
-.dot{width:16px;height:16px;border-radius:50%;display:flex;align-items:center;
-  justify-content:center;font-size:9px;font-weight:700;color:white}
+.dot{width:16px;height:16px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:700;color:white}
 .dot-correct{background:var(--accent2)}
 .dot-wrong{background:var(--danger)}
-
-/* Student */
 .student-page{min-height:100vh;background:var(--bg)}
 .student-topbar{background:#1a1714;padding:14px 20px;display:flex;align-items:center;justify-content:space-between}
 .student-topbar-title{color:white;font-size:15px;font-weight:700}
@@ -182,29 +173,22 @@ tr:hover td{background:#f9f8f6}
 .sq-card{background:white;border-radius:var(--radius);padding:20px;box-shadow:var(--shadow);margin-bottom:16px}
 .sq-card.correct-card{border-left:4px solid var(--accent2)}
 .sq-card.wrong-card{border-left:4px solid var(--danger)}
-.sq-num{font-size:11px;font-weight:700;color:var(--ink2);letter-spacing:.1em;text-transform:uppercase;
-  margin-bottom:8px;display:flex;align-items:center;justify-content:space-between}
+.sq-num{font-size:11px;font-weight:700;color:var(--ink2);letter-spacing:.1em;text-transform:uppercase;margin-bottom:8px;display:flex;align-items:center;justify-content:space-between}
 .sq-text{font-size:15px;font-weight:600;margin-bottom:14px;line-height:1.6}
 .sq-opts{display:flex;flex-direction:column;gap:8px}
-.sq-opt{display:flex;align-items:center;gap:12px;padding:11px 14px;border-radius:8px;
-  border:2px solid var(--border);cursor:pointer;transition:all .15s}
+.sq-opt{display:flex;align-items:center;gap:12px;padding:11px 14px;border-radius:8px;border:2px solid var(--border);cursor:pointer;transition:all .15s}
 .sq-opt:hover:not(.revealed){border-color:var(--accent2);background:#f0f9f4}
 .sq-opt.selected{border-color:var(--accent);background:#e8f5ee}
 .sq-opt.correct-reveal{border-color:var(--accent2);background:#e8f5ee}
 .sq-opt.wrong-reveal{border-color:var(--danger);background:#ffeee8;opacity:.75}
-.opt-circle{width:26px;height:26px;border-radius:50%;border:2px solid var(--border);
-  display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;
-  flex-shrink:0;transition:all .15s;color:var(--ink2)}
+.opt-circle{width:26px;height:26px;border-radius:50%;border:2px solid var(--border);display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;flex-shrink:0;transition:all .15s;color:var(--ink2)}
 .sq-opt.selected .opt-circle{border-color:var(--accent);background:var(--accent);color:white}
 .sq-opt.correct-reveal .opt-circle{border-color:var(--accent2);background:var(--accent2);color:white}
 .sq-opt.wrong-reveal .opt-circle{border-color:var(--danger);background:var(--danger);color:white}
 .opt-text{font-size:14px;color:var(--ink);flex:1}
 .hint-btn{display:inline-flex;align-items:center;gap:5px;padding:5px 12px;border-radius:6px;
-  border:1.5px solid #f0e0a0;background:#fffbf0;color:#a67c00;font-size:12px;font-weight:600;
-  cursor:pointer;transition:all .15s;font-family:'Noto Sans TC',sans-serif}
-.hint-btn:hover{background:#fff3cc}
-.hint-bubble{background:#fffbf0;border:1.5px solid #f0e0a0;border-radius:8px;padding:10px 14px;
-  font-size:13px;color:#7a5c00;margin-top:10px;line-height:1.6}
+  border:1.5px solid #f0e0a0;background:#fffbf0;color:#a67c00;font-size:12px;font-weight:600;cursor:pointer;font-family:'Noto Sans TC',sans-serif}
+.hint-bubble{background:#fffbf0;border:1.5px solid #f0e0a0;border-radius:8px;padding:10px 14px;font-size:13px;color:#7a5c00;margin-top:10px;line-height:1.6}
 .hint-bubble-title{font-size:11px;font-weight:700;color:#a67c00;margin-bottom:4px}
 .expl-bubble{background:#f0f9f4;border:1.5px solid #b7e4c7;border-radius:8px;padding:12px 14px;margin-top:12px}
 .expl-bubble-title{font-size:11px;font-weight:700;color:var(--accent);margin-bottom:6px}
@@ -222,29 +206,37 @@ tr:hover td{background:#f9f8f6}
 .result-badge{display:inline-flex;align-items:center;gap:5px;padding:4px 10px;border-radius:20px;font-size:12px;font-weight:700}
 .result-badge.correct{background:#e8f5ee;color:var(--accent)}
 .result-badge.wrong{background:#ffeee8;color:var(--danger)}
-
-/* Toast & Loading */
 .toast{position:fixed;bottom:24px;right:24px;background:#1a1714;color:white;padding:12px 20px;
   border-radius:8px;font-size:14px;z-index:1000;box-shadow:0 4px 20px rgba(0,0,0,.3);animation:slideUp .3s ease}
 @keyframes slideUp{from{transform:translateY(20px);opacity:0}to{transform:translateY(0);opacity:1}}
-.loading{display:flex;align-items:center;justify-content:center;min-height:200px;
-  font-size:14px;color:var(--ink2);gap:10px}
-.spinner{width:20px;height:20px;border:2px solid var(--border);border-top-color:var(--accent);
-  border-radius:50%;animation:spin .7s linear infinite}
+.loading{display:flex;align-items:center;justify-content:center;min-height:200px;font-size:14px;color:var(--ink2);gap:10px}
+.spinner{width:20px;height:20px;border:2px solid var(--border);border-top-color:var(--accent);border-radius:50%;animation:spin .7s linear infinite}
 @keyframes spin{to{transform:rotate(360deg)}}
 .empty-state{text-align:center;padding:60px 20px;color:var(--ink2)}
 .empty-icon{font-size:48px;margin-bottom:16px}
-.progress-bar-wrap{background:white;border-radius:10px;padding:12px 16px;margin-bottom:16px;
-  box-shadow:var(--shadow);display:flex;align-items:center;gap:12px}
+.progress-bar-wrap{background:white;border-radius:10px;padding:12px 16px;margin-bottom:16px;box-shadow:var(--shadow);display:flex;align-items:center;gap:12px}
 .progress-track{flex:1;height:6px;background:var(--border);border-radius:3px;overflow:hidden}
 .progress-fill{height:100%;background:var(--accent2);border-radius:3px;transition:width .3s}
-
+.admin-header{background:linear-gradient(135deg,#3730a3,#5b4fcf);border-radius:var(--radius);padding:24px;margin-bottom:24px;color:white}
+.admin-header-title{font-size:20px;font-weight:700;margin-bottom:4px}
+.admin-header-sub{font-size:13px;opacity:.75}
+.teacher-row{display:flex;align-items:center;justify-content:space-between;padding:14px 0;border-bottom:1px solid var(--border)}
+.teacher-row:last-child{border-bottom:none}
+.teacher-info{display:flex;align-items:center;gap:12px}
+.teacher-avatar{width:36px;height:36px;border-radius:50%;background:var(--accent);display:flex;align-items:center;justify-content:center;font-size:14px;font-weight:700;color:white;flex-shrink:0}
+.teacher-name{font-size:14px;font-weight:600}
+.teacher-email{font-size:12px;color:var(--ink2)}
+.teacher-stats{display:flex;gap:16px}
+.t-stat{text-align:center}
+.t-stat-val{font-size:18px;font-weight:700;color:var(--accent)}
+.t-stat-lab{font-size:11px;color:var(--ink2)}
 @media(max-width:768px){
   .sidebar{display:none}
   .main{margin-left:0;max-width:100%;padding:16px}
   .stats-row{grid-template-columns:1fr 1fr}
   .form-row{grid-template-columns:1fr}
   .options-grid{grid-template-columns:1fr}
+  .info-grid{grid-template-columns:1fr}
 }
 `
 
@@ -261,27 +253,68 @@ function formatTime(ts) {
 }
 function scoreBadgeClass(s) { return s >= 80 ? 'score-high' : s >= 60 ? 'score-mid' : 'score-low' }
 
-// ─── Toast ────────────────────────────────────────────────────────────────────
 function Toast({ msg }) {
   return <div className="toast">✓ {msg}</div>
 }
 
-// ─── Login Page ───────────────────────────────────────────────────────────────
-function LoginPage({ onLogin }) {
+// ─── Excel Export ─────────────────────────────────────────────────────────────
+function exportToExcel(quiz, responses) {
+  if (!responses.length) { alert('目前沒有作答紀錄'); return }
+
+  // Sheet 1: 成績總表
+  const scoreData = responses.map((r, i) => {
+    const row = {
+      '序號': i + 1,
+      '班級': r.class,
+      '座號': r.seat,
+      '姓名': r.name,
+      '總分': r.score,
+      '作答時間': formatTime(r.submittedAt),
+    }
+    quiz.questions.forEach((q, qi) => {
+      const ans = r.answers?.[qi]
+      row[`第${qi + 1}題`] = ans !== undefined && ans >= 0 ? ['A','B','C','D'][ans] : '-'
+      row[`第${qi + 1}題是否正確`] = ans === q.correct ? '✓' : '✗'
+    })
+    return row
+  })
+
+  // Sheet 2: 題目分析
+  const analysisData = quiz.questions.map((q, qi) => {
+    const total = responses.length
+    const correct = responses.filter(r => r.answers?.[qi] === q.correct).length
+    const optCounts = [0,1,2,3].map(oi => responses.filter(r => r.answers?.[qi] === oi).length)
+    return {
+      '題號': `第${qi + 1}題`,
+      '題目': q.text,
+      '正確答案': ['A','B','C','D'][q.correct],
+      '配分': q.points,
+      '答對人數': correct,
+      '答對率': total ? `${Math.round(correct / total * 100)}%` : '-',
+      '選A人數': optCounts[0],
+      '選B人數': optCounts[1],
+      '選C人數': optCounts[2],
+      '選D人數': optCounts[3],
+    }
+  })
+
+  const wb = XLSX.utils.book_new()
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(scoreData), '學生成績')
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(analysisData), '題目分析')
+
+  const filename = `${quiz.title}_成績_${new Date().toLocaleDateString('zh-TW').replace(/\//g, '-')}.xlsx`
+  XLSX.writeFile(wb, filename)
+}
+
+// ─── Login ────────────────────────────────────────────────────────────────────
+function LoginPage() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
-
   const handleLogin = async () => {
-    setLoading(true)
-    setError('')
-    try {
-      await signInWithPopup(auth, googleProvider)
-    } catch (e) {
-      setError('登入失敗，請再試一次')
-      setLoading(false)
-    }
+    setLoading(true); setError('')
+    try { await signInWithPopup(auth, googleProvider) }
+    catch { setError('登入失敗，請再試一次'); setLoading(false) }
   }
-
   return (
     <div className="login-page">
       <div className="login-card">
@@ -301,7 +334,7 @@ function LoginPage({ onLogin }) {
         </button>
         {error && <div style={{marginTop:12,fontSize:13,color:'var(--danger)',textAlign:'center'}}>{error}</div>}
         <div className="login-features">
-          {['每位老師獨立空間，資料安全分離','支援 Excel 批量匯入，可設定提示與解析','學生連結以 #/s/ID 方式運作，靜態網頁即可'].map(f => (
+          {['每位老師獨立空間，資料安全分離','支援 Excel 批量匯入與成績匯出','學生無需登入，輸入班級座號即可作答'].map(f => (
             <div key={f} className="feat-item"><div className="feat-dot"/>{f}</div>
           ))}
         </div>
@@ -312,27 +345,42 @@ function LoginPage({ onLogin }) {
 
 // ─── Sidebar ──────────────────────────────────────────────────────────────────
 function Sidebar({ hash, user, onLogout }) {
-  const nav = [
-    { path: '/',          icon: '◉', label: '我的測驗' },
-    { path: '/create',    icon: '＋', label: '新增測驗' },
-  ]
+  const admin = isAdmin(user)
   const initial = user?.displayName?.[0] || user?.email?.[0] || '?'
+  const teacherNav = [
+    { path:'/',         icon:'◉', label:'我的測驗' },
+    { path:'/create',   icon:'＋', label:'新增測驗' },
+  ]
+  const adminNav = [
+    { path:'/admin',    icon:'⊞', label:'管理後台', adminClass:true },
+  ]
   return (
     <div className="sidebar">
       <div className="sidebar-brand">
         <div className="brand-name">📋 QuizFlow</div>
         <div className="brand-sub">Teacher Dashboard</div>
+        {admin && <div className="admin-badge">管理員</div>}
       </div>
       <div className="sidebar-nav">
-        {nav.map(n => (
-          <div key={n.path} className={`nav-item ${hash === n.path ? 'active' : ''}`}
-            onClick={() => navigate(n.path)}>
+        {teacherNav.map(n => (
+          <div key={n.path} className={`nav-item ${hash===n.path?'active':''}`} onClick={() => navigate(n.path)}>
             <span className="nav-icon">{n.icon}</span>{n.label}
           </div>
         ))}
+        {admin && (
+          <>
+            <div style={{height:1,background:'rgba(255,255,255,.08)',margin:'8px 4px'}}/>
+            {adminNav.map(n => (
+              <div key={n.path} className={`nav-item ${n.adminClass?'admin-nav':''} ${hash===n.path?'active':''}`}
+                onClick={() => navigate(n.path)}>
+                <span className="nav-icon">{n.icon}</span>{n.label}
+              </div>
+            ))}
+          </>
+        )}
       </div>
       <div className="sidebar-user">
-        <div className="user-avatar">{initial.toUpperCase()}</div>
+        <div className={`user-avatar ${admin?'admin-avatar':''}`}>{initial.toUpperCase()}</div>
         <div style={{overflow:'hidden'}}>
           <div className="user-name">{user?.displayName || user?.email}</div>
         </div>
@@ -342,23 +390,148 @@ function Sidebar({ hash, user, onLogout }) {
   )
 }
 
+// ─── Admin Panel ──────────────────────────────────────────────────────────────
+function AdminPanel() {
+  const [teachers, setTeachers] = useState([])
+  const [quizzes, setQuizzes] = useState([])
+  const [responses, setResponses] = useState([])
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    async function load() {
+      const [qSnap, rSnap] = await Promise.all([
+        getDocs(collection(db, 'quizzes')),
+        getDocs(collection(db, 'responses')),
+      ])
+      const allQuizzes = qSnap.docs.map(d => ({ id: d.id, ...d.data() }))
+      const allResponses = rSnap.docs.map(d => ({ id: d.id, ...d.data() }))
+
+      // 彙整老師資料
+      const teacherMap = {}
+      allQuizzes.forEach(q => {
+        const id = q.teacherId
+        if (!teacherMap[id]) teacherMap[id] = { id, name: q.teacherName || '未知', email: '', quizCount: 0, responseCount: 0 }
+        teacherMap[id].quizCount++
+        teacherMap[id].responseCount += allResponses.filter(r => r.quizId === q.id).length
+      })
+      setTeachers(Object.values(teacherMap).sort((a, b) => b.quizCount - a.quizCount))
+      setQuizzes(allQuizzes)
+      setResponses(allResponses)
+      setLoading(false)
+    }
+    load()
+  }, [])
+
+  if (loading) return <div className="loading"><div className="spinner"/>載入中...</div>
+
+  const totalResponses = responses.length
+  const avgResponsesPerQuiz = quizzes.length ? Math.round(totalResponses / quizzes.length) : 0
+
+  return (
+    <div>
+      <div className="admin-header">
+        <div className="admin-header-title">⊞ 系統管理後台</div>
+        <div className="admin-header-sub">查看所有老師的使用狀況與全站統計</div>
+      </div>
+
+      <div className="stats-row">
+        {[
+          { label:'老師帳號數', value: teachers.length, sub:'位老師', color:'var(--admin)' },
+          { label:'測驗總數',   value: quizzes.length,  sub:'份測驗' },
+          { label:'作答總次數', value: totalResponses,   sub:'筆紀錄', color:'var(--accent)' },
+          { label:'平均每份',   value: avgResponsesPerQuiz, sub:'人作答' },
+        ].map(s => (
+          <div key={s.label} className="stat-box">
+            <div className="stat-label">{s.label}</div>
+            <div className="stat-value" style={{color: s.color || 'var(--ink)'}}>{s.value}</div>
+            <div className="stat-sub">{s.sub}</div>
+          </div>
+        ))}
+      </div>
+
+      <div className="card" style={{marginBottom:20}}>
+        <div style={{fontSize:16,fontWeight:700,marginBottom:20}}>👩‍🏫 老師帳號統計</div>
+        {teachers.length === 0 ? (
+          <div className="empty-state" style={{padding:40}}>
+            <div className="empty-icon">📭</div><div>目前還沒有老師登入使用</div>
+          </div>
+        ) : teachers.map((t, i) => (
+          <div key={t.id} className="teacher-row">
+            <div className="teacher-info">
+              <div className="teacher-avatar">{(t.name?.[0] || '?').toUpperCase()}</div>
+              <div>
+                <div className="teacher-name">{t.name}</div>
+                <div className="teacher-email">{t.id}</div>
+              </div>
+            </div>
+            <div className="teacher-stats">
+              <div className="t-stat">
+                <div className="t-stat-val">{t.quizCount}</div>
+                <div className="t-stat-lab">測驗數</div>
+              </div>
+              <div className="t-stat">
+                <div className="t-stat-val">{t.responseCount}</div>
+                <div className="t-stat-lab">作答數</div>
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      <div className="card">
+        <div style={{fontSize:16,fontWeight:700,marginBottom:16}}>📋 所有測驗列表</div>
+        {quizzes.length === 0 ? (
+          <div className="empty-state" style={{padding:40}}><div>目前沒有測驗</div></div>
+        ) : (
+          <div style={{overflowX:'auto'}}>
+            <table>
+              <thead><tr><th>測驗名稱</th><th>老師</th><th>科目</th><th>題數</th><th>作答人數</th><th>建立日期</th></tr></thead>
+              <tbody>
+                {quizzes.sort((a,b) => (b.createdAt?.seconds||0) - (a.createdAt?.seconds||0)).map(q => (
+                  <tr key={q.id}>
+                    <td style={{fontWeight:600}}>{q.title}</td>
+                    <td style={{fontSize:13,color:'var(--ink2)'}}>{q.teacherName || '-'}</td>
+                    <td><span className="quiz-tag-pill" style={{marginBottom:0}}>{q.subject || '-'}</span></td>
+                    <td>{q.questions?.length || 0} 題</td>
+                    <td>
+                      <span className="score-badge score-high">
+                        {responses.filter(r => r.quizId === q.id).length} 人
+                      </span>
+                    </td>
+                    <td style={{fontSize:13,color:'var(--ink2)'}}>{formatDate(q.createdAt)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
 // ─── Dashboard ────────────────────────────────────────────────────────────────
 function Dashboard({ user }) {
   const [quizzes, setQuizzes] = useState([])
+  const [responseCounts, setResponseCounts] = useState({})
   const [loading, setLoading] = useState(true)
   const [toast, setToast] = useState('')
 
   useEffect(() => {
     async function load() {
       try {
-        const q = query(
-          collection(db, 'quizzes'),
-          where('teacherId', '==', user.uid),
-          orderBy('createdAt', 'desc')
-        )
+        const q = query(collection(db,'quizzes'), where('teacherId','==',user.uid), orderBy('createdAt','desc'))
         const snap = await getDocs(q)
-        setQuizzes(snap.docs.map(d => ({ id: d.id, ...d.data() })))
-      } catch (e) { console.error(e) }
+        const list = snap.docs.map(d => ({ id:d.id, ...d.data() }))
+        setQuizzes(list)
+        // load response counts
+        const counts = {}
+        await Promise.all(list.map(async quiz => {
+          const rs = await getDocs(query(collection(db,'responses'), where('quizId','==',quiz.id)))
+          counts[quiz.id] = rs.size
+        }))
+        setResponseCounts(counts)
+      } catch(e) { console.error(e) }
       setLoading(false)
     }
     load()
@@ -367,8 +540,7 @@ function Dashboard({ user }) {
   const copyLink = (id) => {
     const url = `${window.location.origin}${window.location.pathname}#/s/${id}`
     navigator.clipboard.writeText(url)
-    setToast('連結已複製！')
-    setTimeout(() => setToast(''), 2000)
+    setToast('連結已複製！'); setTimeout(() => setToast(''), 2000)
   }
 
   if (loading) return <div className="loading"><div className="spinner"/>載入中...</div>
@@ -376,15 +548,13 @@ function Dashboard({ user }) {
   return (
     <div>
       <div className="page-header">
-        <div><div className="page-title">我的測驗</div>
-          <div className="page-sub">管理你建立的所有測驗卷</div></div>
+        <div><div className="page-title">我的測驗</div><div className="page-sub">管理你建立的所有測驗卷</div></div>
         <button className="btn btn-primary" onClick={() => navigate('/create')}>＋ 新增測驗</button>
       </div>
       {quizzes.length === 0 ? (
         <div className="empty-state">
           <div className="empty-icon">📋</div>
           <div style={{fontSize:16,fontWeight:600,marginBottom:8}}>還沒有測驗</div>
-          <div style={{fontSize:14,marginBottom:20}}>點擊右上角「新增測驗」開始建立你的第一份測驗</div>
           <button className="btn btn-primary" onClick={() => navigate('/create')}>＋ 新增測驗</button>
         </div>
       ) : (
@@ -395,19 +565,16 @@ function Dashboard({ user }) {
               <div className="quiz-name">{q.title}</div>
               <div className="quiz-meta">
                 <span>📝 {q.questions?.length || 0} 題</span>
+                <span>👥 {responseCounts[q.id] || 0} 人作答</span>
                 <span>🗓 {formatDate(q.createdAt)}</span>
               </div>
               <div className="quiz-url">
-                <span style={{overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>
-                  ...#/s/{q.id}
-                </span>
+                <span style={{overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>...#/s/{q.id}</span>
                 <span className="copy-btn" onClick={() => copyLink(q.id)}>複製連結</span>
               </div>
               <div style={{display:'flex',gap:8,marginTop:12}}>
-                <button className="btn btn-secondary btn-sm" style={{flex:1}}
-                  onClick={() => navigate(`/results/${q.id}`)}>📊 成績</button>
-                <button className="btn btn-secondary btn-sm" style={{flex:1}}
-                  onClick={() => navigate(`/analytics/${q.id}`)}>📈 分析</button>
+                <button className="btn btn-secondary btn-sm" style={{flex:1}} onClick={() => navigate(`/results/${q.id}`)}>📊 成績</button>
+                <button className="btn btn-secondary btn-sm" style={{flex:1}} onClick={() => navigate(`/analytics/${q.id}`)}>📈 分析</button>
               </div>
             </div>
           ))}
@@ -436,64 +603,49 @@ function CreateQuiz({ user }) {
   const [createdId, setCreatedId] = useState(null)
   const [toast, setToast] = useState('')
 
-  const addQ = () => setQuestions(prev => [...prev, emptyQ()])
-  const removeQ = i => setQuestions(prev => prev.filter((_,idx) => idx !== i))
-  const updateQ = (i, field, val) => setQuestions(prev => { const qs=[...prev]; qs[i]={...qs[i],[field]:val}; return qs })
-  const updateOpt = (qi, oi, val) => setQuestions(prev => { const qs=[...prev]; qs[qi].options[oi]=val; return qs })
-  const toggleField = (i, field) => setQuestions(prev => { const qs=[...prev]; qs[i]={...qs[i],[field]:!qs[i][field]}; return qs })
+  const addQ = () => setQuestions(p => [...p, emptyQ()])
+  const removeQ = i => setQuestions(p => p.filter((_,idx) => idx!==i))
+  const updateQ = (i,f,v) => setQuestions(p => { const q=[...p]; q[i]={...q[i],[f]:v}; return q })
+  const updateOpt = (qi,oi,v) => setQuestions(p => { const q=[...p]; q[qi].options[oi]=v; return q })
+  const toggleField = (i,f) => setQuestions(p => { const q=[...p]; q[i]={...q[i],[f]:!q[i][f]}; return q })
 
   const handleExcel = (e) => {
-    const file = e.target.files[0]
-    if (!file) return
+    const file = e.target.files[0]; if (!file) return
     const reader = new FileReader()
     reader.onload = (ev) => {
       try {
-        const wb = XLSX.read(ev.target.result, { type: 'binary' })
+        const wb = XLSX.read(ev.target.result, { type:'binary' })
         const ws = wb.Sheets[wb.SheetNames[0]]
-        const rows = XLSX.utils.sheet_to_json(ws, { header: 1 })
-        const parsed = rows.slice(1).filter(r => r[0]).map(r => ({
-          text: String(r[0] || ''),
-          options: [String(r[1]||''), String(r[2]||''), String(r[3]||''), String(r[4]||'')],
+        const rows = XLSX.utils.sheet_to_json(ws, { header:1 })
+        const parsed = rows.slice(1).filter(r=>r[0]).map(r => ({
+          text: String(r[0]||''), options: [String(r[1]||''),String(r[2]||''),String(r[3]||''),String(r[4]||'')],
           correct: ['A','B','C','D'].indexOf(String(r[5]||'A').toUpperCase()),
-          points: parseInt(r[6]) || 10,
-          hint: String(r[7] || ''),
-          explanation: String(r[8] || ''),
-          showHint: !!r[7],
-          showExpl: !!r[8],
+          points: parseInt(r[6])||10, hint: String(r[7]||''), explanation: String(r[8]||''),
+          showHint: !!r[7], showExpl: !!r[8],
         }))
         if (parsed.length > 0) {
-          setQuestions(parsed)
-          setToast(`成功匯入 ${parsed.length} 道題目`)
-          setTimeout(() => setToast(''), 2000)
-          setMode('manual')
+          setQuestions(parsed); setMode('manual')
+          setToast(`成功匯入 ${parsed.length} 道題目`); setTimeout(()=>setToast(''),2000)
         }
-      } catch(err) {
-        alert('Excel 格式錯誤，請確認欄位格式')
-      }
+      } catch { alert('Excel 格式錯誤，請確認欄位格式') }
     }
     reader.readAsBinaryString(file)
   }
 
   const handleSave = async () => {
     if (!title.trim()) { alert('請輸入測驗名稱'); return }
-    if (questions.some(q => !q.text.trim())) { alert('請填寫所有題目'); return }
+    if (questions.some(q=>!q.text.trim())) { alert('請填寫所有題目'); return }
     setSaving(true)
     try {
       const clean = questions.map(({ showHint, showExpl, ...q }) => q)
-      const docRef = await addDoc(collection(db, 'quizzes'), {
-        teacherId: user.uid,
-        teacherName: user.displayName || user.email,
-        title: title.trim(),
-        subject: subject.trim() || '未分類',
-        questions: clean,
-        settings: { allowHint, showExplAfter, showCorrect },
+      const docRef = await addDoc(collection(db,'quizzes'), {
+        teacherId: user.uid, teacherName: user.displayName || user.email,
+        title: title.trim(), subject: subject.trim()||'未分類',
+        questions: clean, settings: { allowHint, showExplAfter, showCorrect },
         createdAt: serverTimestamp(),
       })
       setCreatedId(docRef.id)
-    } catch(e) {
-      alert('儲存失敗，請確認 Firebase 設定')
-      console.error(e)
-    }
+    } catch(e) { alert('儲存失敗，請確認 Firebase 設定'); console.error(e) }
     setSaving(false)
   }
 
@@ -505,16 +657,12 @@ function CreateQuiz({ user }) {
         <div style={{fontSize:22,fontWeight:700,marginBottom:8}}>測驗已建立！</div>
         <div style={{fontSize:14,color:'var(--ink2)',marginBottom:24}}>將以下連結傳給學生即可開始作答</div>
         <div className="card" style={{padding:20,marginBottom:16}}>
-          <div style={{fontFamily:"'DM Mono',monospace",fontSize:13,background:'#f5f3ef',
-            padding:'10px 14px',borderRadius:8,marginBottom:12,wordBreak:'break-all'}}>{url}</div>
-          <button className="btn btn-primary" style={{width:'100%'}}
-            onClick={() => { navigator.clipboard.writeText(url) }}>複製學生作答連結</button>
+          <div style={{fontFamily:"'DM Mono',monospace",fontSize:13,background:'#f5f3ef',padding:'10px 14px',borderRadius:8,marginBottom:12,wordBreak:'break-all'}}>{url}</div>
+          <button className="btn btn-primary" style={{width:'100%'}} onClick={() => navigator.clipboard.writeText(url)}>複製學生作答連結</button>
         </div>
         <div style={{display:'flex',gap:10,justifyContent:'center'}}>
           <button className="btn btn-secondary" onClick={() => navigate('/')}>回到首頁</button>
-          <button className="btn btn-secondary" onClick={() => { setCreatedId(null); setTitle(''); setSubject(''); setQuestions([emptyQ()]) }}>
-            再建一份
-          </button>
+          <button className="btn btn-secondary" onClick={() => { setCreatedId(null);setTitle('');setSubject('');setQuestions([emptyQ()]) }}>再建一份</button>
         </div>
       </div>
     )
@@ -523,16 +671,13 @@ function CreateQuiz({ user }) {
   return (
     <div style={{maxWidth:700}}>
       <div className="page-header">
-        <div><div className="page-title">新增測驗</div>
-          <div className="page-sub">手動輸入或上傳 Excel，可為每題設定提示與解析</div></div>
+        <div><div className="page-title">新增測驗</div><div className="page-sub">手動輸入或上傳 Excel，可為每題設定提示與解析</div></div>
       </div>
-
       <div className="tabs">
-        <div className={`tab ${mode==='manual'?'active':''}`} onClick={() => setMode('manual')}>✎ 手動輸入</div>
-        <div className={`tab ${mode==='excel'?'active':''}`} onClick={() => setMode('excel')}>📊 上傳 Excel</div>
+        <div className={`tab ${mode==='manual'?'active':''}`} onClick={()=>setMode('manual')}>✎ 手動輸入</div>
+        <div className={`tab ${mode==='excel'?'active':''}`} onClick={()=>setMode('excel')}>📊 上傳 Excel</div>
       </div>
-
-      {mode === 'excel' && (
+      {mode==='excel' && (
         <div className="card" style={{marginBottom:20}}>
           <label className="upload-zone" style={{display:'block'}}>
             <div style={{fontSize:36,marginBottom:12}}>📊</div>
@@ -541,7 +686,7 @@ function CreateQuiz({ user }) {
             <input type="file" accept=".xlsx,.xls" style={{display:'none'}} onChange={handleExcel}/>
           </label>
           <div style={{marginTop:16}}>
-            <div style={{fontSize:12,fontWeight:600,marginBottom:8,color:'var(--ink2)'}}>Excel 欄位格式（第一列為標題，從第二列填資料）：</div>
+            <div style={{fontSize:12,fontWeight:600,marginBottom:8,color:'var(--ink2)'}}>Excel 欄位格式（第一列為標題）：</div>
             <div style={{overflowX:'auto'}}>
               <table style={{fontSize:11}}>
                 <thead><tr>
@@ -559,7 +704,6 @@ function CreateQuiz({ user }) {
           </div>
         </div>
       )}
-
       <div className="card">
         <div style={{marginBottom:20}}>
           <div className="form-row">
@@ -569,85 +713,62 @@ function CreateQuiz({ user }) {
               <input className="form-input" placeholder="例：自然科學" value={subject} onChange={e=>setSubject(e.target.value)}/></div>
           </div>
         </div>
-
         <div style={{background:'#f5f3ef',borderRadius:8,padding:'10px 14px',marginBottom:20,display:'flex',gap:20,flexWrap:'wrap'}}>
           <span style={{fontSize:13,fontWeight:600}}>設定</span>
-          {[
-            [allowHint, setAllowHint, '允許學生查看提示'],
-            [showExplAfter, setShowExplAfter, '提交後顯示解析'],
-            [showCorrect, setShowCorrect, '顯示正確答案'],
-          ].map(([val, set, label]) => (
-            <label key={label} style={{display:'flex',alignItems:'center',gap:6,fontSize:13,cursor:'pointer'}}>
-              <input type="checkbox" checked={val} onChange={e=>set(e.target.checked)} style={{accentColor:'var(--accent)'}}/>{label}
+          {[[allowHint,setAllowHint,'允許學生查看提示'],[showExplAfter,setShowExplAfter,'提交後顯示解析'],[showCorrect,setShowCorrect,'顯示正確答案']].map(([v,s,l])=>(
+            <label key={l} style={{display:'flex',alignItems:'center',gap:6,fontSize:13,cursor:'pointer'}}>
+              <input type="checkbox" checked={v} onChange={e=>s(e.target.checked)} style={{accentColor:'var(--accent)'}}/>{l}
             </label>
           ))}
         </div>
-
         <div style={{borderTop:'1px solid var(--border)',paddingTop:20}}>
           <div style={{fontSize:14,fontWeight:700,marginBottom:16}}>📝 題目設定</div>
-          {questions.map((q, qi) => (
+          {questions.map((q,qi)=>(
             <div key={qi} className="q-editor">
               <div className="q-editor-header">
                 <span className="q-num-label">第 {qi+1} 題</span>
                 <div style={{display:'flex',alignItems:'center',gap:12}}>
                   <span style={{fontSize:12,color:'var(--ink2)'}}>配分</span>
-                  <input className="form-input" type="number" min="1"
-                    style={{width:60,padding:'4px 8px',fontSize:13}}
+                  <input className="form-input" type="number" min="1" style={{width:60,padding:'4px 8px',fontSize:13}}
                     value={q.points} onChange={e=>updateQ(qi,'points',parseInt(e.target.value)||1)}/>
-                  {questions.length>1 && <span style={{fontSize:12,color:'var(--danger)',cursor:'pointer'}}
-                    onClick={()=>removeQ(qi)}>✕ 刪除</span>}
+                  {questions.length>1 && <span style={{fontSize:12,color:'var(--danger)',cursor:'pointer'}} onClick={()=>removeQ(qi)}>✕ 刪除</span>}
                 </div>
               </div>
               <input className="form-input" placeholder="輸入題目..." value={q.text}
                 onChange={e=>updateQ(qi,'text',e.target.value)} style={{marginBottom:10}}/>
               <div className="options-grid">
-                {['A','B','C','D'].map((lbl,oi) => (
+                {['A','B','C','D'].map((lbl,oi)=>(
                   <div key={oi} className="option-row">
                     <span className="opt-label">{lbl}.</span>
-                    <input className="form-input" style={{fontSize:13,padding:'7px 10px'}}
-                      placeholder={`選項 ${lbl}`} value={q.options[oi]}
-                      onChange={e=>updateOpt(qi,oi,e.target.value)}/>
+                    <input className="form-input" style={{fontSize:13,padding:'7px 10px'}} placeholder={`選項 ${lbl}`}
+                      value={q.options[oi]} onChange={e=>updateOpt(qi,oi,e.target.value)}/>
                     <input type="radio" style={{accentColor:'var(--accent)',width:16,height:16,cursor:'pointer'}}
-                      name={`correct_${qi}`} checked={q.correct===oi} onChange={()=>updateQ(qi,'correct',oi)} id={`r_${qi}_${oi}`}/>
+                      name={`c_${qi}`} checked={q.correct===oi} onChange={()=>updateQ(qi,'correct',oi)} id={`r_${qi}_${oi}`}/>
                     <label style={{fontSize:11,color:'var(--ink2)',cursor:'pointer'}} htmlFor={`r_${qi}_${oi}`}>正確</label>
                   </div>
                 ))}
               </div>
               <div style={{display:'flex',flexWrap:'wrap',gap:6}}>
-                <button className="hint-toggle" onClick={()=>toggleField(qi,'showHint')}>
-                  {q.showHint?'▼':'▶'} 💡 提示
-                </button>
-                <button className="hint-toggle" style={{borderColor:'#b7e4c7',color:'var(--accent)'}}
-                  onClick={()=>toggleField(qi,'showExpl')}>
-                  {q.showExpl?'▼':'▶'} 📖 解析
-                </button>
+                <button className="hint-toggle" onClick={()=>toggleField(qi,'showHint')}>{q.showHint?'▼':'▶'} 💡 提示</button>
+                <button className="hint-toggle" style={{borderColor:'#b7e4c7',color:'var(--accent)'}} onClick={()=>toggleField(qi,'showExpl')}>{q.showExpl?'▼':'▶'} 📖 解析</button>
               </div>
-              {q.showHint && (
-                <div className="hint-area" style={{marginTop:10}}>
-                  <div className="hint-area-title">💡 提示內容（學生作答中可主動查看）</div>
-                  <textarea className="form-input" style={{resize:'vertical',minHeight:56,fontSize:13}}
-                    placeholder="例：想想含有葉綠素的細胞器是哪一個？"
-                    value={q.hint} onChange={e=>updateQ(qi,'hint',e.target.value)}/>
-                </div>
-              )}
-              {q.showExpl && (
-                <div className="expl-area" style={{marginTop:8}}>
-                  <div className="expl-area-title">📖 解析內容（提交後才顯示給學生）</div>
-                  <textarea className="form-input" style={{resize:'vertical',minHeight:72,fontSize:13}}
-                    placeholder="例：葉綠體含有葉綠素，是光合作用的場所..."
-                    value={q.explanation} onChange={e=>updateQ(qi,'explanation',e.target.value)}/>
-                </div>
-              )}
+              {q.showHint && <div className="hint-area" style={{marginTop:10}}>
+                <div className="hint-area-title">💡 提示內容（學生作答中可主動查看）</div>
+                <textarea className="form-input" style={{resize:'vertical',minHeight:56,fontSize:13}}
+                  placeholder="例：想想含有葉綠素的細胞器是哪一個？" value={q.hint} onChange={e=>updateQ(qi,'hint',e.target.value)}/>
+              </div>}
+              {q.showExpl && <div className="expl-area" style={{marginTop:8}}>
+                <div className="expl-area-title">📖 解析內容（提交後才顯示給學生）</div>
+                <textarea className="form-input" style={{resize:'vertical',minHeight:72,fontSize:13}}
+                  placeholder="例：葉綠體含有葉綠素，是光合作用的場所..." value={q.explanation} onChange={e=>updateQ(qi,'explanation',e.target.value)}/>
+              </div>}
             </div>
           ))}
           <button className="btn btn-secondary btn-sm" onClick={addQ}>＋ 新增題目</button>
         </div>
-
         <div style={{marginTop:24,display:'flex',justifyContent:'flex-end',gap:10}}>
           <button className="btn btn-secondary" onClick={()=>navigate('/')}>取消</button>
-          <button className="btn btn-primary" onClick={handleSave} disabled={saving}>
-            {saving ? '儲存中...' : '建立測驗並產生連結 →'}
-          </button>
+          <button className="btn btn-primary" onClick={handleSave} disabled={saving}>{saving?'儲存中...':'建立測驗並產生連結 →'}</button>
         </div>
       </div>
       {toast && <Toast msg={toast}/>}
@@ -664,13 +785,11 @@ function Results({ quizId }) {
 
   useEffect(() => {
     async function load() {
-      const qSnap = await getDoc(doc(db, 'quizzes', quizId))
+      const qSnap = await getDoc(doc(db,'quizzes',quizId))
       if (!qSnap.exists()) { setLoading(false); return }
-      setQuiz({ id: qSnap.id, ...qSnap.data() })
-      const rSnap = await getDocs(
-        query(collection(db,'responses'), where('quizId','==',quizId), orderBy('submittedAt','desc'))
-      )
-      setResponses(rSnap.docs.map(d => ({ id:d.id, ...d.data() })))
+      setQuiz({ id:qSnap.id, ...qSnap.data() })
+      const rSnap = await getDocs(query(collection(db,'responses'),where('quizId','==',quizId),orderBy('submittedAt','desc')))
+      setResponses(rSnap.docs.map(d=>({id:d.id,...d.data()})))
       setLoading(false)
     }
     load()
@@ -679,7 +798,7 @@ function Results({ quizId }) {
   if (loading) return <div className="loading"><div className="spinner"/>載入中...</div>
   if (!quiz) return <div className="empty-state"><div>找不到這份測驗</div></div>
 
-  const classes = ['all', ...new Set(responses.map(r=>r.class).filter(Boolean))]
+  const classes = ['all',...new Set(responses.map(r=>r.class).filter(Boolean))]
   const filtered = filter==='all' ? responses : responses.filter(r=>r.class===filter)
   const avg = filtered.length ? Math.round(filtered.reduce((s,r)=>s+r.score,0)/filtered.length) : 0
 
@@ -691,6 +810,9 @@ function Results({ quizId }) {
           <div className="page-title">{quiz.title}</div>
           <div className="page-sub">成績查詢</div>
         </div>
+        <button className="btn btn-excel" onClick={()=>exportToExcel(quiz, responses)}>
+          📥 匯出 Excel
+        </button>
       </div>
       <div className="stats-row">
         {[
@@ -716,10 +838,7 @@ function Results({ quizId }) {
           ))}
         </div>
         {filtered.length===0 ? (
-          <div className="empty-state" style={{padding:40}}>
-            <div className="empty-icon">📭</div>
-            <div>目前沒有作答紀錄</div>
-          </div>
+          <div className="empty-state" style={{padding:40}}><div className="empty-icon">📭</div><div>目前沒有作答紀錄</div></div>
         ) : (
           <div style={{overflowX:'auto'}}>
             <table>
@@ -731,14 +850,13 @@ function Results({ quizId }) {
                     <td style={{fontFamily:"'DM Mono',monospace"}}>{r.seat}</td>
                     <td style={{fontWeight:500}}>{r.name}</td>
                     <td><span className={`score-badge ${scoreBadgeClass(r.score)}`}>{r.score}分</span></td>
-                    <td>
-                      <div className="answer-dots">
-                        {quiz.questions.map((q,i)=>(
-                          <div key={i} className={`dot ${r.answers?.[i]===q.correct?'dot-correct':'dot-wrong'}`}
-                            title={`第${i+1}題`}>{r.answers?.[i]===q.correct?'✓':'✗'}</div>
-                        ))}
-                      </div>
-                    </td>
+                    <td><div className="answer-dots">
+                      {quiz.questions.map((q,i)=>(
+                        <div key={i} className={`dot ${r.answers?.[i]===q.correct?'dot-correct':'dot-wrong'}`} title={`第${i+1}題`}>
+                          {r.answers?.[i]===q.correct?'✓':'✗'}
+                        </div>
+                      ))}
+                    </div></td>
                     <td style={{color:'var(--ink2)',fontSize:13}}>{formatTime(r.submittedAt)}</td>
                   </tr>
                 ))}
@@ -788,6 +906,7 @@ function Analytics({ quizId }) {
           <div className="page-title">{quiz.title}</div>
           <div className="page-sub">答題分析 — {n} 人作答</div>
         </div>
+        <button className="btn btn-excel" onClick={()=>exportToExcel(quiz, responses)}>📥 匯出 Excel</button>
       </div>
       <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:16,marginBottom:24}}>
         <div className="card">
@@ -799,9 +918,7 @@ function Analytics({ quizId }) {
                   <div className="q-text-sm">第{i+1}題：{s.q.text.length>20?s.q.text.slice(0,20)+'...':s.q.text}</div>
                   <div className={`q-rate ${s.rate>=70?'good':'bad'}`}>{s.rate}%</div>
                 </div>
-                <div className="q-bar-bg">
-                  <div className={`q-bar ${s.rate>=70?'bar-green':'bar-red'}`} style={{width:`${s.rate}%`}}/>
-                </div>
+                <div className="q-bar-bg"><div className={`q-bar ${s.rate>=70?'bar-green':'bar-red'}`} style={{width:`${s.rate}%`}}/></div>
               </div>
             ))}
           </div>
@@ -828,7 +945,7 @@ function Analytics({ quizId }) {
         </div>
       </div>
       <div className="card">
-        <div style={{fontSize:14,fontWeight:700,marginBottom:14}}>⚠️ 最難題目排名（答錯最多）</div>
+        <div style={{fontSize:14,fontWeight:700,marginBottom:14}}>⚠️ 最難題目排名</div>
         <table>
           <thead><tr><th>排名</th><th>題目</th><th>答對率</th><th>最多人答錯的選項</th></tr></thead>
           <tbody>
@@ -875,13 +992,12 @@ function StudentQuiz({ quizId }) {
   }, [quizId])
 
   const toggleHint = i => setShownHints(h=>({...h,[i]:!h[i]}))
-  const totalPoints = quiz?.questions?.reduce((s,q)=>s+q.points,0) || 0
+  const totalPoints = quiz?.questions?.reduce((s,q)=>s+q.points,0)||0
   const allAnswered = quiz?.questions?.every((_,i)=>answers[i]!==undefined)
 
   const handleSubmit = async () => {
     setSaving(true)
-    let s=0
-    quiz.questions.forEach((q,i)=>{ if(answers[i]===q.correct) s+=q.points })
+    let s=0; quiz.questions.forEach((q,i)=>{ if(answers[i]===q.correct) s+=q.points })
     setScore(s)
     try {
       await addDoc(collection(db,'responses'),{
@@ -890,8 +1006,7 @@ function StudentQuiz({ quizId }) {
         submittedAt: serverTimestamp(),
       })
     } catch(e) { console.error('儲存失敗',e) }
-    setSaving(false)
-    setStep('result')
+    setSaving(false); setStep('result')
   }
 
   if (loading) return (
@@ -907,15 +1022,13 @@ function StudentQuiz({ quizId }) {
     </div>
   )
 
-  const s = quiz.settings || {}
+  const s = quiz.settings||{}
 
   if (step==='result') {
     const correctCount = quiz.questions.filter((_,i)=>answers[i]===quiz.questions[i].correct).length
     return (
       <div className="student-page">
-        <div className="student-topbar">
-          <div><div className="student-topbar-title">📋 {quiz.title}</div></div>
-        </div>
+        <div className="student-topbar"><div><div className="student-topbar-title">📋 {quiz.title}</div></div></div>
         <div className="student-body">
           <div className="result-card">
             <div style={{fontSize:16,fontWeight:700}}>✅ 作答完成！</div>
@@ -928,8 +1041,7 @@ function StudentQuiz({ quizId }) {
               <div className="rb-item"><div className="rb-val">{totalPoints?Math.round(score/totalPoints*100):0}%</div><div className="rb-lab">正確率</div></div>
             </div>
           </div>
-
-          {(s.showCorrect!==false || s.showExplAfter!==false) && (
+          {(s.showCorrect!==false||s.showExplAfter!==false) && (
             <div>
               <div style={{fontSize:16,fontWeight:700,marginBottom:16}}>📋 詳細解析</div>
               {quiz.questions.map((q,qi)=>{
@@ -938,28 +1050,26 @@ function StudentQuiz({ quizId }) {
                   <div key={qi} className={`sq-card ${isCorrect?'correct-card':'wrong-card'}`}>
                     <div className="sq-num">
                       <span>第 {qi+1} 題 · {q.points}分</span>
-                      <span className={`result-badge ${isCorrect?'correct':'wrong'}`}>
-                        {isCorrect?'✓ 答對':'✗ 答錯'}
-                      </span>
+                      <span className={`result-badge ${isCorrect?'correct':'wrong'}`}>{isCorrect?'✓ 答對':'✗ 答錯'}</span>
                     </div>
                     <div className="sq-text">{q.text}</div>
                     <div className="sq-opts" style={{pointerEvents:'none'}}>
                       {q.options.map((opt,oi)=>{
                         let cls='revealed'
-                        if(s.showCorrect!==false && oi===q.correct) cls+=' correct-reveal'
+                        if(s.showCorrect!==false&&oi===q.correct) cls+=' correct-reveal'
                         else if(oi===answers[qi]) cls+=' wrong-reveal'
                         return (
                           <div key={oi} className={`sq-opt ${cls}`}>
                             <div className="opt-circle">{['A','B','C','D'][oi]}</div>
                             <div className="opt-text">{opt}
-                              {s.showCorrect!==false && oi===q.correct && <span style={{fontSize:11,color:'var(--accent)',marginLeft:8,fontWeight:700}}>← 正確答案</span>}
+                              {s.showCorrect!==false&&oi===q.correct&&<span style={{fontSize:11,color:'var(--accent)',marginLeft:8,fontWeight:700}}>← 正確答案</span>}
                               {oi===answers[qi]&&oi!==q.correct&&<span style={{fontSize:11,color:'var(--danger)',marginLeft:8}}>← 你的選擇</span>}
                             </div>
                           </div>
                         )
                       })}
                     </div>
-                    {s.showExplAfter!==false && q.explanation && (
+                    {s.showExplAfter!==false&&q.explanation&&(
                       isCorrect
                         ? <div className="expl-bubble"><div className="expl-bubble-title">📖 解析</div><div className="expl-bubble-text">{q.explanation}</div></div>
                         : <div className="wrong-expl-bubble"><div className="wrong-expl-title">📖 看看哪裡答錯了</div><div className="wrong-expl-text">{q.explanation}</div></div>
@@ -1005,34 +1115,22 @@ function StudentQuiz({ quizId }) {
         {step==='quiz' && (
           <>
             <div className="progress-bar-wrap">
-              <span style={{fontSize:13,color:'var(--ink2)',flexShrink:0}}>
-                已作答 {Object.keys(answers).length}/{quiz.questions.length}
-              </span>
-              <div className="progress-track">
-                <div className="progress-fill" style={{width:`${Object.keys(answers).length/quiz.questions.length*100}%`}}/>
-              </div>
+              <span style={{fontSize:13,color:'var(--ink2)',flexShrink:0}}>已作答 {Object.keys(answers).length}/{quiz.questions.length}</span>
+              <div className="progress-track"><div className="progress-fill" style={{width:`${Object.keys(answers).length/quiz.questions.length*100}%`}}/></div>
             </div>
             {quiz.questions.map((q,qi)=>(
               <div key={qi} className="sq-card">
                 <div className="sq-num">
                   <span>第 {qi+1} 題 · {q.points}分</span>
-                  {s.allowHint!==false && q.hint && (
-                    <button className="hint-btn" onClick={()=>toggleHint(qi)}>
-                      💡 {shownHints[qi]?'收起提示':'查看提示'}
-                    </button>
+                  {s.allowHint!==false&&q.hint&&(
+                    <button className="hint-btn" onClick={()=>toggleHint(qi)}>💡 {shownHints[qi]?'收起提示':'查看提示'}</button>
                   )}
                 </div>
                 <div className="sq-text">{q.text}</div>
-                {q.hint && shownHints[qi] && (
-                  <div className="hint-bubble">
-                    <div className="hint-bubble-title">💡 提示</div>
-                    {q.hint}
-                  </div>
-                )}
-                <div className="sq-opts" style={{marginTop: q.hint&&shownHints[qi]?12:0}}>
+                {q.hint&&shownHints[qi]&&<div className="hint-bubble"><div className="hint-bubble-title">💡 提示</div>{q.hint}</div>}
+                <div className="sq-opts" style={{marginTop:q.hint&&shownHints[qi]?12:0}}>
                   {q.options.map((opt,oi)=>(
-                    <div key={oi} className={`sq-opt ${answers[qi]===oi?'selected':''}`}
-                      onClick={()=>setAnswers({...answers,[qi]:oi})}>
+                    <div key={oi} className={`sq-opt ${answers[qi]===oi?'selected':''}`} onClick={()=>setAnswers({...answers,[qi]:oi})}>
                       <div className="opt-circle">{['A','B','C','D'][oi]}</div>
                       <div className="opt-text">{opt}</div>
                     </div>
@@ -1055,62 +1153,36 @@ function StudentQuiz({ quizId }) {
 
 // ─── App ──────────────────────────────────────────────────────────────────────
 export default function App() {
-  const [user, setUser] = useState(undefined) // undefined = loading
+  const [user, setUser] = useState(undefined)
   const hash = useHash()
 
-  useEffect(() => {
-    return onAuthStateChanged(auth, u => setUser(u || null))
-  }, [])
+  useEffect(() => { return onAuthStateChanged(auth, u => setUser(u||null)) }, [])
 
-  // Parse route
   const isStudentRoute = hash.startsWith('/s/')
-  const isResultsRoute = hash.startsWith('/results/')
-  const isAnalyticsRoute = hash.startsWith('/analytics/')
 
-  // Student page is public (no login needed)
-  if (isStudentRoute) {
-    const quizId = hash.replace('/s/', '')
-    return (
-      <>
-        <style>{css}</style>
-        <StudentQuiz quizId={quizId}/>
-      </>
-    )
-  }
+  if (isStudentRoute) return (
+    <><style>{css}</style><StudentQuiz quizId={hash.replace('/s/','')}/></>
+  )
 
-  // Loading auth state
   if (user === undefined) return (
-    <>
-      <style>{css}</style>
-      <div className="loading" style={{minHeight:'100vh'}}><div className="spinner"/>載入中...</div>
-    </>
+    <><style>{css}</style><div className="loading" style={{minHeight:'100vh'}}><div className="spinner"/>載入中...</div></>
   )
 
-  // Not logged in → show login
   if (!user) return (
-    <>
-      <style>{css}</style>
-      <LoginPage onLogin={()=>{}}/>
-    </>
+    <><style>{css}</style><LoginPage/></>
   )
 
-  // Logged in → teacher dashboard
   const handleLogout = () => signOut(auth)
 
   let content
-  if (isResultsRoute) {
-    content = <Results quizId={hash.replace('/results/','')}/>
-  } else if (isAnalyticsRoute) {
-    content = <Analytics quizId={hash.replace('/analytics/','')}/>
-  } else if (hash === '/create') {
-    content = <CreateQuiz user={user}/>
-  } else {
-    content = <Dashboard user={user}/>
-  }
+  if (hash.startsWith('/results/'))   content = <Results quizId={hash.replace('/results/','')}/>
+  else if (hash.startsWith('/analytics/')) content = <Analytics quizId={hash.replace('/analytics/','')}/>
+  else if (hash === '/create')         content = <CreateQuiz user={user}/>
+  else if (hash === '/admin' && isAdmin(user)) content = <AdminPanel/>
+  else                                 content = <Dashboard user={user}/>
 
   return (
-    <>
-      <style>{css}</style>
+    <><style>{css}</style>
       <div className="app">
         <div className="layout">
           <Sidebar hash={hash} user={user} onLogout={handleLogout}/>
