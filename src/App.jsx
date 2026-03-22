@@ -3,7 +3,7 @@ import { auth, db, googleProvider } from './firebase.js'
 import { signInWithPopup, signOut, onAuthStateChanged } from 'firebase/auth'
 import {
   collection, addDoc, getDocs, getDoc, doc,
-  query, where, orderBy, serverTimestamp
+  query, where, serverTimestamp
 } from 'firebase/firestore'
 import * as XLSX from 'xlsx'
 
@@ -145,6 +145,15 @@ tr:hover td{background:#f9f8f6}
 .expl-area-title{font-size:11px;font-weight:700;color:var(--accent);text-transform:uppercase;letter-spacing:.08em;margin-bottom:8px}
 .upload-zone{border:2px dashed var(--border);border-radius:10px;padding:32px;text-align:center;cursor:pointer;transition:all .2s;background:white}
 .upload-zone:hover{border-color:var(--accent);background:#f0f9f4}
+.paste-zone{width:100%;min-height:160px;padding:14px;border-radius:10px;border:1.5px solid var(--border);font-size:13px;font-family:'DM Mono',monospace;color:var(--ink);background:white;resize:vertical;transition:border-color .15s;line-height:1.5}
+.paste-zone:focus{outline:none;border-color:var(--accent)}
+.paste-zone::placeholder{color:var(--ink2);font-family:'Noto Sans TC',sans-serif;font-size:13px}
+.parse-preview{background:#f0f9f4;border:1.5px solid #b7e4c7;border-radius:10px;padding:14px;margin-top:12px}
+.parse-preview-title{font-size:12px;font-weight:700;color:var(--accent);margin-bottom:10px}
+.preview-row{font-size:12px;color:var(--ink);padding:6px 0;border-bottom:1px solid #d8f0e4;display:flex;gap:8px;align-items:flex-start}
+.preview-row:last-child{border-bottom:none}
+.preview-qnum{font-weight:700;color:var(--accent);flex-shrink:0;width:40px}
+.preview-qtext{flex:1}
 .q-analytics{display:flex;flex-direction:column;gap:12px}
 .q-row{background:#f9f8f6;border-radius:10px;padding:14px 16px}
 .q-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px}
@@ -257,7 +266,33 @@ function Toast({ msg }) {
   return <div className="toast">✓ {msg}</div>
 }
 
-// ─── Excel Export ─────────────────────────────────────────────────────────────
+// ─── Parse rows helper (shared by Excel & Paste) ─────────────────────────────
+// Forces every cell to string so "3/8" stays "3/8" and never becomes 0.375
+function parseQuestionRows(rows) {
+  return rows.slice(1).filter(r => r[0]).map(r => {
+    const correctLetter = String(r[5] || 'A').trim().toUpperCase()
+    const correctIdx = ['A','B','C','D'].indexOf(correctLetter)
+    return {
+      text:        String(r[0] || '').trim(),
+      options:     [String(r[1]||''), String(r[2]||''), String(r[3]||''), String(r[4]||'')],
+      correct:     correctIdx >= 0 ? correctIdx : 0,
+      points:      parseInt(String(r[6]).replace(/[^0-9]/g,'')) || 10,
+      hint:        String(r[7] || '').trim(),
+      explanation: String(r[8] || '').trim(),
+      showHint:    !!r[7],
+      showExpl:    !!r[8],
+    }
+  })
+}
+
+// Parse tab-separated text (from AI output or copy-paste)
+function parsePasteText(text) {
+  const lines = text.trim().split('\n').filter(l => l.trim())
+  if (lines.length < 2) return null
+  // Support both tab and multiple-spaces as delimiter
+  const rows = lines.map(l => l.split('\t'))
+  return parseQuestionRows(rows)
+}
 function exportToExcel(quiz, responses) {
   if (!responses.length) { alert('目前沒有作答紀錄'); return }
 
@@ -520,9 +555,10 @@ function Dashboard({ user }) {
   useEffect(() => {
     async function load() {
       try {
-        const q = query(collection(db,'quizzes'), where('teacherId','==',user.uid), orderBy('createdAt','desc'))
+        const q = query(collection(db,'quizzes'), where('teacherId','==',user.uid))
         const snap = await getDocs(q)
         const list = snap.docs.map(d => ({ id:d.id, ...d.data() }))
+          .sort((a,b) => (b.createdAt?.seconds||0) - (a.createdAt?.seconds||0))
         setQuizzes(list)
         // load response counts
         const counts = {}
@@ -603,6 +639,26 @@ function CreateQuiz({ user }) {
   const [createdId, setCreatedId] = useState(null)
   const [toast, setToast] = useState('')
 
+  const [pasteText, setPasteText] = useState('')
+  const [pastePreview, setPastePreview] = useState(null)
+
+  const handlePasteChange = (text) => {
+    setPasteText(text)
+    if (text.trim()) {
+      const parsed = parsePasteText(text)
+      setPastePreview(parsed)
+    } else {
+      setPastePreview(null)
+    }
+  }
+
+  const handlePasteImport = () => {
+    if (!pastePreview || pastePreview.length === 0) { alert('無法解析，請確認格式'); return }
+    setQuestions(pastePreview)
+    setPasteText(''); setPastePreview(null); setMode('manual')
+    setToast(`成功匯入 ${pastePreview.length} 道題目`); setTimeout(()=>setToast(''),2000)
+  }
+
   const addQ = () => setQuestions(p => [...p, emptyQ()])
   const removeQ = i => setQuestions(p => p.filter((_,idx) => idx!==i))
   const updateQ = (i,f,v) => setQuestions(p => { const q=[...p]; q[i]={...q[i],[f]:v}; return q })
@@ -616,13 +672,9 @@ function CreateQuiz({ user }) {
       try {
         const wb = XLSX.read(ev.target.result, { type:'binary' })
         const ws = wb.Sheets[wb.SheetNames[0]]
-        const rows = XLSX.utils.sheet_to_json(ws, { header:1 })
-        const parsed = rows.slice(1).filter(r=>r[0]).map(r => ({
-          text: String(r[0]||''), options: [String(r[1]||''),String(r[2]||''),String(r[3]||''),String(r[4]||'')],
-          correct: ['A','B','C','D'].indexOf(String(r[5]||'A').toUpperCase()),
-          points: parseInt(r[6])||10, hint: String(r[7]||''), explanation: String(r[8]||''),
-          showHint: !!r[7], showExpl: !!r[8],
-        }))
+        // raw:false → forces all cells to formatted string, prevents 3/8 → 0.375
+        const rows = XLSX.utils.sheet_to_json(ws, { header:1, raw:false, defval:'' })
+        const parsed = parseQuestionRows(rows)
         if (parsed.length > 0) {
           setQuestions(parsed); setMode('manual')
           setToast(`成功匯入 ${parsed.length} 道題目`); setTimeout(()=>setToast(''),2000)
@@ -676,13 +728,14 @@ function CreateQuiz({ user }) {
       <div className="tabs">
         <div className={`tab ${mode==='manual'?'active':''}`} onClick={()=>setMode('manual')}>✎ 手動輸入</div>
         <div className={`tab ${mode==='excel'?'active':''}`} onClick={()=>setMode('excel')}>📊 上傳 Excel</div>
+        <div className={`tab ${mode==='paste'?'active':''}`} onClick={()=>setMode('paste')}>📋 貼上文字</div>
       </div>
       {mode==='excel' && (
         <div className="card" style={{marginBottom:20}}>
           <label className="upload-zone" style={{display:'block'}}>
             <div style={{fontSize:36,marginBottom:12}}>📊</div>
             <div style={{fontSize:14,fontWeight:600,marginBottom:6}}>點擊選擇 Excel 檔案</div>
-            <div style={{fontSize:12,color:'var(--ink2)'}}>支援 .xlsx / .xls</div>
+            <div style={{fontSize:12,color:'var(--ink2)'}}>支援 .xlsx / .xls · 分數如 3/8 會正確保留</div>
             <input type="file" accept=".xlsx,.xls" style={{display:'none'}} onChange={handleExcel}/>
           </label>
           <div style={{marginTop:16}}>
@@ -695,7 +748,7 @@ function CreateQuiz({ user }) {
                   ))}
                 </tr></thead>
                 <tbody><tr>
-                  {['光合作用...','粒線體','葉綠體','核糖體','液泡','B','10','含葉綠素...','葉綠體是...'].map((c,i)=>(
+                  {['算算看3/8+...','1/4','3/8','1/2','5/8','B','10','分母相同時...','分母不變分子相加'].map((c,i)=>(
                     <td key={i} style={{padding:'5px 8px',border:'1px solid var(--border)',color:'var(--ink2)',whiteSpace:'nowrap'}}>{c}</td>
                   ))}
                 </tr></tbody>
@@ -704,6 +757,53 @@ function CreateQuiz({ user }) {
           </div>
         </div>
       )}
+      {mode==='paste' && (
+        <div className="card" style={{marginBottom:20}}>
+          <div style={{fontSize:14,fontWeight:700,marginBottom:4}}>📋 貼上 AI 生成的題目文字</div>
+          <div style={{fontSize:12,color:'var(--ink2)',marginBottom:12}}>
+            請確認格式為 <b>Tab 分隔</b>，第一列是標題列，欄位順序：<br/>
+            <span style={{fontFamily:"'DM Mono',monospace",fontSize:11,background:'#f5f3ef',padding:'2px 6px',borderRadius:4,display:'inline-block',marginTop:4}}>
+              題目 + 選A + 選B + 選C + 選D + 正確答案(A/B/C/D) + 配分 + 提示 + 解析
+            </span>
+          </div>
+          <textarea
+            className="paste-zone"
+            placeholder={"直接把 AI 給你的表格文字貼在這裡...\n\n範例（Tab 分隔，第一列標題）：\n題目\t選A\t選B\t選C\t選D\t正確(A/B/C/D)\t配分\t提示(選填)\t解析(選填)\n小明吃了3/8個披薩...\t1/8\t3/8\t5/8\t8/3\tB\t10\t分母是份數\t全部8份吃了3份"}
+            value={pasteText}
+            onChange={e => handlePasteChange(e.target.value)}
+          />
+          {pastePreview && pastePreview.length > 0 && (
+            <div className="parse-preview">
+              <div className="parse-preview-title">✅ 預覽：成功解析 {pastePreview.length} 道題目</div>
+              {pastePreview.slice(0,3).map((q,i) => (
+                <div key={i} className="preview-row">
+                  <div className="preview-qnum">第{i+1}題</div>
+                  <div className="preview-qtext">
+                    <div style={{fontWeight:600,marginBottom:3}}>{q.text.slice(0,40)}{q.text.length>40?'...':''}</div>
+                    <div style={{color:'var(--ink2)',fontSize:11}}>
+                      {q.options.map((o,oi) => (
+                        <span key={oi} style={{marginRight:8,color:oi===q.correct?'var(--accent)':'var(--ink2)',fontWeight:oi===q.correct?700:400}}>
+                          {['A','B','C','D'][oi]}.{o}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              ))}
+              {pastePreview.length > 3 && <div style={{fontSize:12,color:'var(--ink2)',paddingTop:8}}>...還有 {pastePreview.length-3} 道題目</div>}
+              <button className="btn btn-primary" style={{marginTop:12,width:'100%'}} onClick={handlePasteImport}>
+                匯入這 {pastePreview.length} 道題目 →
+              </button>
+            </div>
+          )}
+          {pasteText && (!pastePreview || pastePreview.length === 0) && (
+            <div style={{marginTop:12,padding:'10px 14px',background:'#ffeee8',borderRadius:8,fontSize:13,color:'var(--danger)'}}>
+              ⚠️ 無法解析，請確認第一列是標題列，且欄位之間用 Tab 分隔
+            </div>
+          )}
+        </div>
+      )}
+      {/* Main form card */}
       <div className="card">
         <div style={{marginBottom:20}}>
           <div className="form-row">
@@ -788,8 +888,8 @@ function Results({ quizId }) {
       const qSnap = await getDoc(doc(db,'quizzes',quizId))
       if (!qSnap.exists()) { setLoading(false); return }
       setQuiz({ id:qSnap.id, ...qSnap.data() })
-      const rSnap = await getDocs(query(collection(db,'responses'),where('quizId','==',quizId),orderBy('submittedAt','desc')))
-      setResponses(rSnap.docs.map(d=>({id:d.id,...d.data()})))
+      const rSnap = await getDocs(query(collection(db,'responses'),where('quizId','==',quizId)))
+      setResponses(rSnap.docs.map(d=>({id:d.id,...d.data()})).sort((a,b)=>(b.submittedAt?.seconds||0)-(a.submittedAt?.seconds||0)))
       setLoading(false)
     }
     load()
