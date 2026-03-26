@@ -1,18 +1,20 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import { auth, db, googleProvider } from './firebase.js'
 import { signInWithPopup, signOut, onAuthStateChanged } from 'firebase/auth'
-import {
-  collection, addDoc, getDocs, getDoc, doc, deleteDoc, setDoc,
-  query, where, serverTimestamp
-} from 'firebase/firestore'
+import { collection, addDoc, getDocs, getDoc, doc, deleteDoc, setDoc, query, where, serverTimestamp } from 'firebase/firestore'
 import * as XLSX from 'xlsx'
+import katex from 'katex'
+import 'katex/dist/katex.min.css'
+import QRCode from 'qrcode'
 
-// ─── Admin emails ─────────────────────────────────────────────────────────────
+// ─── Constants ────────────────────────────────────────────────────────────────
 const ADMIN_EMAILS = ['issac@sjps.kh.edu.tw']
-const isAdmin = (user) => user && ADMIN_EMAILS.includes(user.email)
+const isAdmin = (u) => u && ADMIN_EMAILS.includes(u.email)
+const ABCD = ['A','B','C','D']
+const padSeat = (s) => String(parseInt(String(s).trim()) || 0).padStart(2, '0')
 
 // ─── Hash Router ──────────────────────────────────────────────────────────────
-function getHash() { return window.location.hash.replace('#', '') || '/' }
+function getHash() { return window.location.hash.replace('#','') || '/' }
 function useHash() {
   const [hash, setHash] = useState(getHash)
   useEffect(() => {
@@ -23,6 +25,90 @@ function useHash() {
   return hash
 }
 function navigate(path) { window.location.hash = path }
+
+// ─── Math Rendering ───────────────────────────────────────────────────────────
+function renderMath(text) {
+  if (!text || typeof text !== 'string') return text || ''
+  let r = text
+  r = r.replace(/\$\$([^$]+?)\$\$/g, (m, math) => {
+    try { return katex.renderToString(math.trim(), { displayMode:true, throwOnError:false }) }
+    catch { return m }
+  })
+  r = r.replace(/\$([^$\n]+?)\$/g, (m, math) => {
+    try { return katex.renderToString(math.trim(), { throwOnError:false }) }
+    catch { return m }
+  })
+  return r
+}
+function MathText({ text, className, style, tag='span' }) {
+  const html = renderMath(text || '')
+  const Tag = tag
+  if (html === (text||'')) return <Tag className={className} style={style}>{text}</Tag>
+  return <Tag className={className} style={style} dangerouslySetInnerHTML={{__html:html}}/>
+}
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+const fmtDate = (ts) => { if(!ts) return ''; const d=ts.toDate?ts.toDate():new Date(ts); return d.toLocaleDateString('zh-TW') }
+const fmtTime = (ts) => { if(!ts) return ''; const d=ts.toDate?ts.toDate():new Date(ts); return d.toLocaleTimeString('zh-TW',{hour:'2-digit',minute:'2-digit'}) }
+const scoreClass = (s) => s>=80?'score-high':s>=60?'score-mid':'score-low'
+const errorColor = (rate) => rate>=80?'err-red':rate>=50?'err-orange':rate>=30?'err-yellow':'err-green'
+
+function parseQuestionRows(rows) {
+  return rows.slice(1).filter(r=>r[0]).map(r => ({
+    text: String(r[0]||'').trim(),
+    options: [String(r[1]||''),String(r[2]||''),String(r[3]||''),String(r[4]||'')],
+    correct: Math.max(0, ABCD.indexOf(String(r[5]||'A').trim().toUpperCase())),
+    points: parseInt(String(r[6]).replace(/[^0-9]/g,''))||10,
+    hint: String(r[7]||'').trim(),
+    explanation: String(r[8]||'').trim(),
+    showHint: !!r[7], showExpl: !!r[8],
+  }))
+}
+function parsePasteText(text) {
+  const lines = text.trim().split('\n').filter(l=>l.trim())
+  if (lines.length < 2) return null
+  return parseQuestionRows(lines.map(l=>l.split('\t')))
+}
+
+function exportToExcel(quiz, responses) {
+  if (!responses.length) { alert('目前沒有作答紀錄'); return }
+  const groups = {}
+  responses.forEach(r => {
+    const key = `${r.class}-${padSeat(r.seat)}`
+    if (!groups[key]) groups[key] = { class:r.class, seat:padSeat(r.seat), name:r.name, attempts:[] }
+    groups[key].attempts.push(r)
+  })
+  const sorted = Object.values(groups)
+    .sort((a,b) => a.class.localeCompare(b.class)||a.seat.localeCompare(b.seat))
+    .map(g => {
+      g.attempts.sort((a,b) => (a.submittedAt?.seconds||0)-(b.submittedAt?.seconds||0))
+      return g
+    })
+
+  const scoreData = sorted.map((g,i) => {
+    const first = g.attempts[0], best = g.attempts.reduce((b,a)=>a.score>b.score?a:b, g.attempts[0])
+    const last = g.attempts[g.attempts.length-1]
+    const row = { '序號':i+1,'班級':g.class,'座號':g.seat,'姓名':g.name,
+      '作答次數':g.attempts.length,'第一次成績':first?.score??'-','最高成績':best?.score??'-','最新成績':last?.score??'-' }
+    quiz.questions.forEach((q,qi) => {
+      const ans = last?.answers?.[qi]
+      row[`第${qi+1}題`] = ans!=null&&ans>=0?ABCD[ans]:'-'
+      row[`第${qi+1}題正確`] = ans===q.correct?'✓':'✗'
+    })
+    return row
+  })
+  const analysis = quiz.questions.map((q,qi) => {
+    const n=responses.length, correct=responses.filter(r=>r.answers?.[qi]===q.correct).length
+    const opts = [0,1,2,3].map(oi=>responses.filter(r=>r.answers?.[qi]===oi).length)
+    return { '題號':`第${qi+1}題`,'題目':q.text,'正確答案':ABCD[q.correct],'配分':q.points,
+      '答對人數':correct,'答對率':n?`${Math.round(correct/n*100)}%`:'-',
+      '選A人數':opts[0],'選B人數':opts[1],'選C人數':opts[2],'選D人數':opts[3] }
+  })
+  const wb = XLSX.utils.book_new()
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(scoreData), '學生成績')
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(analysis), '題目分析')
+  XLSX.writeFile(wb, `${quiz.title}_成績_${new Date().toLocaleDateString('zh-TW').replace(/\//g,'-')}.xlsx`)
+}
 
 // ─── CSS ──────────────────────────────────────────────────────────────────────
 const css = `
@@ -36,6 +122,7 @@ const css = `
 }
 body{font-family:'Noto Sans TC',sans-serif;background:var(--bg);color:var(--ink)}
 .app{min-height:100vh}
+/* Login */
 .login-page{min-height:100vh;display:flex;align-items:center;justify-content:center;
   background:linear-gradient(135deg,#1a1714 0%,#2d4a3e 50%,#1a1714 100%);position:relative}
 .login-page::before{content:'';position:absolute;inset:0;
@@ -46,63 +133,63 @@ body{font-family:'Noto Sans TC',sans-serif;background:var(--bg);color:var(--ink)
 .login-logo{font-size:13px;font-weight:500;color:var(--ink2);letter-spacing:.2em;text-transform:uppercase;margin-bottom:32px}
 .login-title{font-size:28px;font-weight:700;margin-bottom:8px;line-height:1.2}
 .login-sub{font-size:14px;color:var(--ink2);margin-bottom:36px}
-.google-btn{width:100%;display:flex;align-items:center;justify-content:center;gap:12px;
-  padding:14px 20px;background:white;border:1.5px solid var(--border);border-radius:10px;
-  font-size:15px;font-weight:500;cursor:pointer;transition:all .2s;font-family:'Noto Sans TC',sans-serif;color:var(--ink)}
-.google-btn:hover{border-color:var(--accent);box-shadow:0 4px 16px rgba(45,106,79,.15);transform:translateY(-1px)}
+.google-btn{width:100%;display:flex;align-items:center;justify-content:center;gap:12px;padding:14px 20px;
+  background:white;border:1.5px solid var(--border);border-radius:10px;font-size:15px;font-weight:500;
+  cursor:pointer;transition:all .2s;font-family:'Noto Sans TC',sans-serif;color:var(--ink)}
+.google-btn:hover{border-color:var(--accent);transform:translateY(-1px);box-shadow:0 4px 16px rgba(45,106,79,.15)}
 .google-btn:disabled{opacity:.6;cursor:not-allowed;transform:none}
 .login-features{margin-top:32px;display:flex;flex-direction:column;gap:10px}
 .feat-item{display:flex;align-items:center;gap:10px;font-size:13px;color:var(--ink2)}
 .feat-dot{width:6px;height:6px;border-radius:50%;background:var(--accent2);flex-shrink:0}
+/* Layout */
 .layout{display:flex;min-height:100vh}
 .sidebar{width:240px;background:#1a1714;flex-shrink:0;display:flex;flex-direction:column;position:fixed;height:100vh;z-index:10}
 .sidebar-brand{padding:24px 20px;border-bottom:1px solid rgba(255,255,255,.08)}
 .brand-name{font-size:16px;font-weight:700;color:white}
 .brand-sub{font-size:11px;color:rgba(255,255,255,.4);margin-top:2px;letter-spacing:.1em;text-transform:uppercase}
-.admin-badge{display:inline-block;background:var(--admin);color:white;font-size:10px;font-weight:700;
-  padding:2px 7px;border-radius:10px;letter-spacing:.05em;margin-top:4px}
-.sidebar-nav{flex:1;padding:16px 12px;display:flex;flex-direction:column;gap:4px}
-.nav-item{display:flex;align-items:center;gap:10px;padding:10px 12px;border-radius:8px;
-  font-size:14px;color:rgba(255,255,255,.6);cursor:pointer;transition:all .15s}
+.admin-badge{display:inline-block;background:var(--admin);color:white;font-size:10px;font-weight:700;padding:2px 7px;border-radius:10px;margin-top:4px}
+.sidebar-nav{flex:1;padding:16px 12px;display:flex;flex-direction:column;gap:4px;overflow-y:auto}
+.nav-item{display:flex;align-items:center;gap:10px;padding:10px 12px;border-radius:8px;font-size:14px;color:rgba(255,255,255,.6);cursor:pointer;transition:all .15s}
 .nav-item:hover{background:rgba(255,255,255,.06);color:white}
 .nav-item.active{background:var(--accent);color:white}
 .nav-item.admin-nav.active{background:var(--admin)}
 .nav-icon{font-size:16px;width:20px;text-align:center}
 .sidebar-user{padding:16px 20px;border-top:1px solid rgba(255,255,255,.08);display:flex;align-items:center;gap:10px}
-.user-avatar{width:32px;height:32px;border-radius:50%;background:var(--accent);
-  display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:700;color:white;flex-shrink:0}
-.user-avatar.admin-avatar{background:var(--admin)}
+.user-avatar{width:32px;height:32px;border-radius:50%;background:var(--accent);display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:700;color:white;flex-shrink:0}
+.user-avatar.admin-av{background:var(--admin)}
 .user-name{font-size:13px;color:rgba(255,255,255,.8);font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:110px}
-.logout-btn{margin-left:auto;font-size:12px;color:rgba(255,255,255,.3);cursor:pointer;padding:4px;border-radius:4px;flex-shrink:0}
+.logout-btn{margin-left:auto;font-size:12px;color:rgba(255,255,255,.3);cursor:pointer;padding:4px;flex-shrink:0}
 .logout-btn:hover{color:rgba(255,255,255,.7)}
 .main{flex:1;margin-left:240px;padding:32px;max-width:calc(100% - 240px)}
+/* Common */
 .page-header{display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:28px}
 .page-title{font-size:24px;font-weight:700}
 .page-sub{font-size:14px;color:var(--ink2);margin-top:4px}
-.btn{display:inline-flex;align-items:center;gap:6px;padding:10px 18px;border-radius:8px;
-  font-size:14px;font-weight:500;cursor:pointer;border:none;transition:all .15s;font-family:'Noto Sans TC',sans-serif}
-.btn:disabled{opacity:.5;cursor:not-allowed}
+.btn{display:inline-flex;align-items:center;gap:6px;padding:10px 18px;border-radius:8px;font-size:14px;font-weight:500;cursor:pointer;border:none;transition:all .15s;font-family:'Noto Sans TC',sans-serif}
+.btn:disabled{opacity:.5;cursor:not-allowed!important;transform:none!important}
 .btn-primary{background:var(--accent);color:white}
 .btn-primary:hover:not(:disabled){background:#235c42;transform:translateY(-1px);box-shadow:0 4px 12px rgba(45,106,79,.3)}
 .btn-secondary{background:white;color:var(--ink);border:1.5px solid var(--border)}
 .btn-secondary:hover:not(:disabled){border-color:var(--accent);color:var(--accent)}
+.btn-danger{background:var(--danger);color:white}
+.btn-danger:hover:not(:disabled){background:#a33a0c;transform:translateY(-1px)}
+.btn-excel{background:#1d6f42;color:white}
+.btn-excel:hover:not(:disabled){background:#155232;transform:translateY(-1px)}
 .btn-admin{background:var(--admin);color:white}
 .btn-admin:hover:not(:disabled){background:#4a3fb5;transform:translateY(-1px)}
-.btn-excel{background:#1d6f42;color:white}
-.btn-excel:hover:not(:disabled){background:#155232;transform:translateY(-1px);box-shadow:0 4px 12px rgba(29,111,66,.3)}
 .btn-sm{padding:6px 12px;font-size:13px}
 .card{background:var(--surface);border-radius:var(--radius);border:1px solid var(--border);padding:24px}
 .tabs{display:flex;gap:4px;background:#f0ede8;border-radius:10px;padding:4px;margin-bottom:20px;width:fit-content}
 .tab{padding:8px 18px;border-radius:8px;font-size:14px;font-weight:500;cursor:pointer;transition:all .15s;color:var(--ink2)}
 .tab.active{background:white;color:var(--ink);box-shadow:0 1px 4px rgba(0,0,0,.1)}
 .form-label{font-size:13px;font-weight:600;color:var(--ink);margin-bottom:8px;display:block}
-.form-input{width:100%;padding:10px 14px;border-radius:8px;border:1.5px solid var(--border);
-  font-size:14px;font-family:'Noto Sans TC',sans-serif;color:var(--ink);background:white;transition:border-color .15s}
+.form-input{width:100%;padding:10px 14px;border-radius:8px;border:1.5px solid var(--border);font-size:14px;font-family:'Noto Sans TC',sans-serif;color:var(--ink);background:white;transition:border-color .15s}
 .form-input:focus{outline:none;border-color:var(--accent)}
+.form-select{width:100%;padding:10px 14px;border-radius:8px;border:1.5px solid var(--border);font-size:14px;font-family:'Noto Sans TC',sans-serif;color:var(--ink);background:white;cursor:pointer}
+.form-select:focus{outline:none;border-color:var(--accent)}
 .form-row{display:grid;grid-template-columns:1fr 1fr;gap:16px}
 table{width:100%;border-collapse:collapse;font-size:14px}
-th{text-align:left;padding:10px 14px;font-size:12px;font-weight:600;color:var(--ink2);
-  text-transform:uppercase;letter-spacing:.05em;border-bottom:2px solid var(--border);background:#f5f3ef}
+th{text-align:left;padding:10px 14px;font-size:12px;font-weight:600;color:var(--ink2);text-transform:uppercase;letter-spacing:.05em;border-bottom:2px solid var(--border);background:#f5f3ef}
 td{padding:12px 14px;border-bottom:1px solid var(--border);color:var(--ink);vertical-align:middle}
 tr:last-child td{border-bottom:none}
 tr:hover td{background:#f9f8f6}
@@ -120,24 +207,21 @@ tr:hover td{background:#f9f8f6}
 .quiz-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:16px}
 .quiz-card{background:var(--surface);border-radius:var(--radius);border:1px solid var(--border);padding:20px;transition:all .2s}
 .quiz-card:hover{border-color:var(--accent2);box-shadow:0 4px 20px rgba(45,106,79,.12);transform:translateY(-2px)}
-.quiz-tag-pill{display:inline-block;padding:3px 10px;border-radius:20px;font-size:11px;font-weight:600;background:#e8f5ee;color:var(--accent);margin-bottom:10px}
+.quiz-tag-pill{display:inline-block;padding:3px 10px;border-radius:20px;font-size:11px;font-weight:600;background:#e8f5ee;color:var(--accent)}
 .quiz-name{font-size:16px;font-weight:700;margin-bottom:6px}
 .quiz-meta{font-size:12px;color:var(--ink2);display:flex;gap:12px;flex-wrap:wrap}
-.quiz-url{margin-top:12px;background:#f5f3ef;border-radius:6px;padding:8px 10px;
-  font-family:'DM Mono',monospace;font-size:11px;color:var(--ink2);display:flex;align-items:center;justify-content:space-between;gap:8px}
+.quiz-url{margin-top:12px;background:#f5f3ef;border-radius:6px;padding:8px 10px;font-family:'DM Mono',monospace;font-size:11px;color:var(--ink2);display:flex;align-items:center;justify-content:space-between;gap:8px}
 .copy-btn{font-size:11px;color:var(--accent);cursor:pointer;font-weight:600;flex-shrink:0}
-.new-quiz-card{background:transparent;border-radius:var(--radius);border:2px dashed var(--border);
-  padding:20px;cursor:pointer;transition:all .2s;display:flex;align-items:center;justify-content:center;
-  gap:8px;color:var(--ink2);font-size:14px;font-weight:500;min-height:140px}
+.new-quiz-card{background:transparent;border-radius:var(--radius);border:2px dashed var(--border);padding:20px;cursor:pointer;transition:all .2s;display:flex;align-items:center;justify-content:center;gap:8px;color:var(--ink2);font-size:14px;font-weight:500;min-height:140px}
 .new-quiz-card:hover{border-color:var(--accent);color:var(--accent);background:#f0f9f4}
+/* Quiz editor */
 .q-editor{border:1.5px solid var(--border);border-radius:10px;padding:18px;margin-bottom:12px;background:white}
 .q-editor-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px}
 .q-num-label{font-size:11px;font-weight:700;color:var(--ink2);text-transform:uppercase;letter-spacing:.1em}
 .options-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px;margin-bottom:12px}
 .option-row{display:flex;align-items:center;gap:8px}
 .opt-label{font-size:12px;font-weight:700;color:var(--ink2);width:18px;flex-shrink:0}
-.hint-toggle{font-size:12px;padding:5px 12px;border-radius:6px;border:1.5px solid var(--border);
-  background:white;cursor:pointer;color:var(--ink2);font-family:'Noto Sans TC',sans-serif;transition:all .15s;margin-right:6px}
+.hint-toggle{font-size:12px;padding:5px 12px;border-radius:6px;border:1.5px solid var(--border);background:white;cursor:pointer;color:var(--ink2);font-family:'Noto Sans TC',sans-serif;transition:all .15s;margin-right:6px}
 .hint-toggle:hover{border-color:var(--warn);color:var(--warn)}
 .hint-area{background:#fffbf0;border:1.5px solid #f0e0a0;border-radius:8px;padding:12px;margin-top:10px}
 .hint-area-title{font-size:11px;font-weight:700;color:#a67c00;text-transform:uppercase;letter-spacing:.08em;margin-bottom:8px}
@@ -147,31 +231,38 @@ tr:hover td{background:#f9f8f6}
 .upload-zone:hover{border-color:var(--accent);background:#f0f9f4}
 .paste-zone{width:100%;min-height:160px;padding:14px;border-radius:10px;border:1.5px solid var(--border);font-size:13px;font-family:'DM Mono',monospace;color:var(--ink);background:white;resize:vertical;transition:border-color .15s;line-height:1.5}
 .paste-zone:focus{outline:none;border-color:var(--accent)}
-.paste-zone::placeholder{color:var(--ink2);font-family:'Noto Sans TC',sans-serif;font-size:13px}
 .parse-preview{background:#f0f9f4;border:1.5px solid #b7e4c7;border-radius:10px;padding:14px;margin-top:12px}
 .parse-preview-title{font-size:12px;font-weight:700;color:var(--accent);margin-bottom:10px}
-.preview-row{font-size:12px;color:var(--ink);padding:6px 0;border-bottom:1px solid #d8f0e4;display:flex;gap:8px;align-items:flex-start}
+.preview-row{font-size:12px;padding:6px 0;border-bottom:1px solid #d8f0e4;display:flex;gap:8px}
 .preview-row:last-child{border-bottom:none}
-.preview-qnum{font-weight:700;color:var(--accent);flex-shrink:0;width:40px}
-.preview-qtext{flex:1}
-.q-analytics{display:flex;flex-direction:column;gap:12px}
-.q-row{background:#f9f8f6;border-radius:10px;padding:14px 16px}
-.q-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px}
+/* Analytics */
+.q-analytics{display:flex;flex-direction:column;gap:10px}
+.q-row{border-radius:10px;padding:14px 16px;border-left:4px solid transparent}
+.err-red{background:#fff2f2;border-left-color:var(--danger)}
+.err-orange{background:#fff6ee;border-left-color:var(--warn)}
+.err-yellow{background:#fffce0;border-left-color:#e9c32a}
+.err-green{background:#f0f9f4;border-left-color:var(--accent2)}
+.q-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;gap:8px}
 .q-text-sm{font-size:13px;font-weight:600;flex:1}
-.q-rate{font-size:13px;font-weight:700}
-.q-rate.good{color:var(--accent)}
-.q-rate.bad{color:var(--danger)}
-.q-bar-bg{height:8px;background:var(--border);border-radius:4px;overflow:hidden}
-.q-bar{height:100%;border-radius:4px;transition:width .6s}
+.err-rate{font-size:12px;font-weight:700;padding:2px 8px;border-radius:4px}
+.err-rate-red{background:#ffeee8;color:var(--danger)}
+.err-rate-orange{background:#fff3e0;color:#c07000}
+.err-rate-yellow{background:#fffbe0;color:#9a7c00}
+.err-rate-green{background:#e8f5ee;color:var(--accent)}
+.q-bar-bg{height:6px;background:rgba(0,0,0,.1);border-radius:3px;overflow:hidden;margin-bottom:8px}
+.q-bar{height:100%;border-radius:3px;transition:width .6s}
 .bar-green{background:var(--accent2)}
 .bar-red{background:#ff7c5c}
-.q-opts-row{display:flex;gap:6px;margin-top:8px;flex-wrap:wrap}
+.q-opts-row{display:flex;gap:6px;flex-wrap:wrap}
 .q-opt-chip{font-size:11px;padding:3px 8px;border-radius:4px;background:white;border:1px solid var(--border);color:var(--ink2)}
 .q-opt-chip.correct{background:#e8f5ee;border-color:var(--accent2);color:var(--accent);font-weight:600}
+.wrong-seats{margin-top:8px;padding-top:8px;border-top:1px solid rgba(0,0,0,.08)}
+.wrong-seat-badge{display:inline-block;padding:2px 7px;border-radius:4px;font-size:11px;background:#ffeee8;color:var(--danger);margin:2px;font-family:'DM Mono',monospace}
 .answer-dots{display:flex;gap:4px}
 .dot{width:16px;height:16px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:700;color:white}
 .dot-correct{background:var(--accent2)}
 .dot-wrong{background:var(--danger)}
+/* Student */
 .student-page{min-height:100vh;background:var(--bg)}
 .student-topbar{background:#1a1714;padding:14px 20px;display:flex;align-items:center;justify-content:space-between}
 .student-topbar-title{color:white;font-size:15px;font-weight:700}
@@ -183,7 +274,7 @@ tr:hover td{background:#f9f8f6}
 .sq-card.correct-card{border-left:4px solid var(--accent2)}
 .sq-card.wrong-card{border-left:4px solid var(--danger)}
 .sq-num{font-size:11px;font-weight:700;color:var(--ink2);letter-spacing:.1em;text-transform:uppercase;margin-bottom:8px;display:flex;align-items:center;justify-content:space-between}
-.sq-text{font-size:15px;font-weight:600;margin-bottom:14px;line-height:1.6}
+.sq-text{font-size:15px;font-weight:600;margin-bottom:14px;line-height:1.7}
 .sq-opts{display:flex;flex-direction:column;gap:8px}
 .sq-opt{display:flex;align-items:center;gap:12px;padding:11px 14px;border-radius:8px;border:2px solid var(--border);cursor:pointer;transition:all .15s}
 .sq-opt:hover:not(.revealed){border-color:var(--accent2);background:#f0f9f4}
@@ -194,10 +285,9 @@ tr:hover td{background:#f9f8f6}
 .sq-opt.selected .opt-circle{border-color:var(--accent);background:var(--accent);color:white}
 .sq-opt.correct-reveal .opt-circle{border-color:var(--accent2);background:var(--accent2);color:white}
 .sq-opt.wrong-reveal .opt-circle{border-color:var(--danger);background:var(--danger);color:white}
-.opt-text{font-size:14px;color:var(--ink);flex:1}
-.hint-btn{display:inline-flex;align-items:center;gap:5px;padding:5px 12px;border-radius:6px;
-  border:1.5px solid #f0e0a0;background:#fffbf0;color:#a67c00;font-size:12px;font-weight:600;cursor:pointer;font-family:'Noto Sans TC',sans-serif}
-.hint-bubble{background:#fffbf0;border:1.5px solid #f0e0a0;border-radius:8px;padding:10px 14px;font-size:13px;color:#7a5c00;margin-top:10px;line-height:1.6}
+.opt-text{font-size:14px;color:var(--ink);flex:1;line-height:1.5}
+.hint-btn{display:inline-flex;align-items:center;gap:5px;padding:5px 12px;border-radius:6px;border:1.5px solid #f0e0a0;background:#fffbf0;color:#a67c00;font-size:12px;font-weight:600;cursor:pointer;font-family:'Noto Sans TC',sans-serif}
+.hint-bubble{background:#fffbf0;border:1.5px solid #f0e0a0;border-radius:8px;padding:10px 14px;font-size:13px;color:#7a5c00;margin-top:10px;line-height:1.7}
 .hint-bubble-title{font-size:11px;font-weight:700;color:#a67c00;margin-bottom:4px}
 .expl-bubble{background:#f0f9f4;border:1.5px solid #b7e4c7;border-radius:8px;padding:12px 14px;margin-top:12px}
 .expl-bubble-title{font-size:11px;font-weight:700;color:var(--accent);margin-bottom:6px}
@@ -215,24 +305,11 @@ tr:hover td{background:#f9f8f6}
 .result-badge{display:inline-flex;align-items:center;gap:5px;padding:4px 10px;border-radius:20px;font-size:12px;font-weight:700}
 .result-badge.correct{background:#e8f5ee;color:var(--accent)}
 .result-badge.wrong{background:#ffeee8;color:var(--danger)}
-.toast{position:fixed;bottom:24px;right:24px;background:#1a1714;color:white;padding:12px 20px;
-  border-radius:8px;font-size:14px;z-index:1000;box-shadow:0 4px 20px rgba(0,0,0,.3);animation:slideUp .3s ease}
-@keyframes slideUp{from{transform:translateY(20px);opacity:0}to{transform:translateY(0);opacity:1}}
-.modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:200;display:flex;align-items:center;justify-content:center;padding:16px}
-.modal-box{background:white;border-radius:16px;padding:28px;width:100%;max-width:400px;box-shadow:0 20px 60px rgba(0,0,0,.3)}
-.modal-title{font-size:18px;font-weight:700;margin-bottom:8px}
-.modal-sub{font-size:14px;color:var(--ink2);margin-bottom:24px;line-height:1.6}
-.modal-actions{display:flex;gap:10px;justify-content:flex-end}
-.btn-danger-solid{background:var(--danger);color:white;border:none}
-.btn-danger-solid:hover:not(:disabled){background:#a33a0c;transform:translateY(-1px)}
-.loading{display:flex;align-items:center;justify-content:center;min-height:200px;font-size:14px;color:var(--ink2);gap:10px}
-.spinner{width:20px;height:20px;border:2px solid var(--border);border-top-color:var(--accent);border-radius:50%;animation:spin .7s linear infinite}
-@keyframes spin{to{transform:rotate(360deg)}}
-.empty-state{text-align:center;padding:60px 20px;color:var(--ink2)}
-.empty-icon{font-size:48px;margin-bottom:16px}
+.result-btns{display:flex;gap:12px;margin-top:20px}
 .progress-bar-wrap{background:white;border-radius:10px;padding:12px 16px;margin-bottom:16px;box-shadow:var(--shadow);display:flex;align-items:center;gap:12px}
 .progress-track{flex:1;height:6px;background:var(--border);border-radius:3px;overflow:hidden}
 .progress-fill{height:100%;background:var(--accent2);border-radius:3px;transition:width .3s}
+/* Admin */
 .admin-header{background:linear-gradient(135deg,#3730a3,#5b4fcf);border-radius:var(--radius);padding:24px;margin-bottom:24px;color:white}
 .admin-header-title{font-size:20px;font-weight:700;margin-bottom:4px}
 .admin-header-sub{font-size:13px;opacity:.75}
@@ -246,6 +323,33 @@ tr:hover td{background:#f9f8f6}
 .t-stat{text-align:center}
 .t-stat-val{font-size:18px;font-weight:700;color:var(--accent)}
 .t-stat-lab{font-size:11px;color:var(--ink2)}
+/* Roster */
+.roster-class-block{background:var(--surface);border-radius:var(--radius);border:1px solid var(--border);margin-bottom:16px;overflow:hidden}
+.roster-class-header{display:flex;align-items:center;justify-content:space-between;padding:14px 18px;background:#f5f3ef;border-bottom:1px solid var(--border)}
+.roster-class-name{font-size:15px;font-weight:700}
+.roster-student-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:8px;padding:14px 18px}
+.roster-student{display:flex;align-items:center;gap:6px;padding:6px 10px;background:white;border-radius:6px;border:1px solid var(--border);font-size:13px}
+.roster-seat{font-family:'DM Mono',monospace;font-size:11px;font-weight:700;color:var(--accent);flex-shrink:0}
+.roster-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* Modals */
+.modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:200;display:flex;align-items:center;justify-content:center;padding:16px}
+.modal-box{background:white;border-radius:16px;padding:28px;width:100%;max-width:420px;box-shadow:0 20px 60px rgba(0,0,0,.3)}
+.modal-title{font-size:18px;font-weight:700;margin-bottom:8px}
+.modal-sub{font-size:14px;color:var(--ink2);margin-bottom:24px;line-height:1.6}
+.modal-actions{display:flex;gap:10px;justify-content:flex-end}
+/* Toast */
+.toast{position:fixed;bottom:24px;right:24px;background:#1a1714;color:white;padding:12px 20px;border-radius:8px;font-size:14px;z-index:1000;box-shadow:0 4px 20px rgba(0,0,0,.3);animation:slideUp .3s ease}
+@keyframes slideUp{from{transform:translateY(20px);opacity:0}to{transform:translateY(0);opacity:1}}
+.loading{display:flex;align-items:center;justify-content:center;min-height:200px;font-size:14px;color:var(--ink2);gap:10px}
+.spinner{width:20px;height:20px;border:2px solid var(--border);border-top-color:var(--accent);border-radius:50%;animation:spin .7s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+.empty-state{text-align:center;padding:60px 20px;color:var(--ink2)}
+.empty-icon{font-size:48px;margin-bottom:16px}
+/* Attempt history */
+.attempt-row{font-size:12px;color:var(--ink2);display:flex;gap:16px;padding:6px 0;border-bottom:1px solid var(--border)}
+.attempt-row:last-child{border-bottom:none}
+/* QR */
+.qr-img{display:block;margin:0 auto;border-radius:8px;image-rendering:pixelated}
 @media(max-width:768px){
   .sidebar{display:none}
   .main{margin-left:0;max-width:100%;padding:16px}
@@ -256,73 +360,50 @@ tr:hover td{background:#f9f8f6}
 }
 `
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
-function formatDate(ts) {
-  if (!ts) return ''
-  const d = ts.toDate ? ts.toDate() : new Date(ts)
-  return d.toLocaleDateString('zh-TW')
-}
-function formatTime(ts) {
-  if (!ts) return ''
-  const d = ts.toDate ? ts.toDate() : new Date(ts)
-  return d.toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit' })
-}
-function scoreBadgeClass(s) { return s >= 80 ? 'score-high' : s >= 60 ? 'score-mid' : 'score-low' }
+// ─── Toast ────────────────────────────────────────────────────────────────────
+function Toast({ msg }) { return <div className="toast">✓ {msg}</div> }
 
-function Toast({ msg }) {
-  return <div className="toast">✓ {msg}</div>
-}
-
-// ─── Confirm Delete Modal ─────────────────────────────────────────────────────
+// ─── Modals ───────────────────────────────────────────────────────────────────
 function ConfirmModal({ title, message, onConfirm, onCancel }) {
   return (
     <div className="modal-overlay" onClick={onCancel}>
-      <div className="modal-box" onClick={e => e.stopPropagation()}>
+      <div className="modal-box" onClick={e=>e.stopPropagation()}>
         <div className="modal-title">🗑️ {title}</div>
         <div className="modal-sub">{message}</div>
         <div className="modal-actions">
           <button className="btn btn-secondary" onClick={onCancel}>取消</button>
-          <button className="btn btn-danger-solid" onClick={onConfirm}>確認刪除</button>
+          <button className="btn btn-danger" onClick={onConfirm}>確認刪除</button>
         </div>
       </div>
     </div>
   )
 }
 
-// ─── Profile Edit Modal ───────────────────────────────────────────────────────
 function ProfileModal({ user, displayName, onSave, onCancel }) {
   const [name, setName] = useState(displayName || user?.displayName || '')
   const [saving, setSaving] = useState(false)
-
   const handleSave = async () => {
     if (!name.trim()) return
     setSaving(true)
     try {
-      await setDoc(doc(db, 'users', user.uid), {
-        displayName: name.trim(),
-        email: user.email,
-        updatedAt: serverTimestamp(),
-      }, { merge: true })
+      await setDoc(doc(db,'users',user.uid), { displayName:name.trim(), email:user.email, updatedAt:serverTimestamp() }, { merge:true })
       onSave(name.trim())
     } catch(e) { console.error(e) }
     setSaving(false)
   }
-
   return (
     <div className="modal-overlay" onClick={onCancel}>
-      <div className="modal-box" onClick={e => e.stopPropagation()}>
-        <div className="modal-title">✏️ 修改顯示名稱</div>
+      <div className="modal-box" onClick={e=>e.stopPropagation()}>
+        <div className="modal-title">✏️ 修改名稱</div>
         <div style={{marginBottom:20}}>
-          <label className="form-label">你的名稱（學生看不到，僅管理員後台顯示）</label>
+          <label className="form-label">你的名稱</label>
           <input className="form-input" placeholder="例：王小明老師" value={name}
-            onChange={e => setName(e.target.value)}
-            onKeyDown={e => e.key === 'Enter' && handleSave()}
-            autoFocus/>
+            onChange={e=>setName(e.target.value)} onKeyDown={e=>e.key==='Enter'&&handleSave()} autoFocus/>
         </div>
         <div className="modal-actions">
           <button className="btn btn-secondary" onClick={onCancel}>取消</button>
-          <button className="btn btn-primary" onClick={handleSave} disabled={saving || !name.trim()}>
-            {saving ? '儲存中...' : '儲存'}
+          <button className="btn btn-primary" onClick={handleSave} disabled={saving||!name.trim()}>
+            {saving?'儲存中...':'儲存'}
           </button>
         </div>
       </div>
@@ -330,79 +411,30 @@ function ProfileModal({ user, displayName, onSave, onCancel }) {
   )
 }
 
-// ─── Parse rows helper (shared by Excel & Paste) ─────────────────────────────
-// Forces every cell to string so "3/8" stays "3/8" and never becomes 0.375
-function parseQuestionRows(rows) {
-  return rows.slice(1).filter(r => r[0]).map(r => {
-    const correctLetter = String(r[5] || 'A').trim().toUpperCase()
-    const correctIdx = ['A','B','C','D'].indexOf(correctLetter)
-    return {
-      text:        String(r[0] || '').trim(),
-      options:     [String(r[1]||''), String(r[2]||''), String(r[3]||''), String(r[4]||'')],
-      correct:     correctIdx >= 0 ? correctIdx : 0,
-      points:      parseInt(String(r[6]).replace(/[^0-9]/g,'')) || 10,
-      hint:        String(r[7] || '').trim(),
-      explanation: String(r[8] || '').trim(),
-      showHint:    !!r[7],
-      showExpl:    !!r[8],
-    }
-  })
-}
-
-// Parse tab-separated text (from AI output or copy-paste)
-function parsePasteText(text) {
-  const lines = text.trim().split('\n').filter(l => l.trim())
-  if (lines.length < 2) return null
-  // Support both tab and multiple-spaces as delimiter
-  const rows = lines.map(l => l.split('\t'))
-  return parseQuestionRows(rows)
-}
-function exportToExcel(quiz, responses) {
-  if (!responses.length) { alert('目前沒有作答紀錄'); return }
-
-  // Sheet 1: 成績總表
-  const scoreData = responses.map((r, i) => {
-    const row = {
-      '序號': i + 1,
-      '班級': r.class,
-      '座號': r.seat,
-      '姓名': r.name,
-      '總分': r.score,
-      '作答時間': formatTime(r.submittedAt),
-    }
-    quiz.questions.forEach((q, qi) => {
-      const ans = r.answers?.[qi]
-      row[`第${qi + 1}題`] = ans !== undefined && ans >= 0 ? ['A','B','C','D'][ans] : '-'
-      row[`第${qi + 1}題是否正確`] = ans === q.correct ? '✓' : '✗'
-    })
-    return row
-  })
-
-  // Sheet 2: 題目分析
-  const analysisData = quiz.questions.map((q, qi) => {
-    const total = responses.length
-    const correct = responses.filter(r => r.answers?.[qi] === q.correct).length
-    const optCounts = [0,1,2,3].map(oi => responses.filter(r => r.answers?.[qi] === oi).length)
-    return {
-      '題號': `第${qi + 1}題`,
-      '題目': q.text,
-      '正確答案': ['A','B','C','D'][q.correct],
-      '配分': q.points,
-      '答對人數': correct,
-      '答對率': total ? `${Math.round(correct / total * 100)}%` : '-',
-      '選A人數': optCounts[0],
-      '選B人數': optCounts[1],
-      '選C人數': optCounts[2],
-      '選D人數': optCounts[3],
-    }
-  })
-
-  const wb = XLSX.utils.book_new()
-  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(scoreData), '學生成績')
-  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(analysisData), '題目分析')
-
-  const filename = `${quiz.title}_成績_${new Date().toLocaleDateString('zh-TW').replace(/\//g, '-')}.xlsx`
-  XLSX.writeFile(wb, filename)
+function QRModal({ url, quizTitle, onClose }) {
+  const [qrSrc, setQrSrc] = useState('')
+  useEffect(() => {
+    QRCode.toDataURL(url, { width:280, margin:2, color:{dark:'#1a1714',light:'#ffffff'} })
+      .then(setQrSrc).catch(()=>{})
+  }, [url])
+  const handleDownload = () => {
+    const a = document.createElement('a')
+    a.href = qrSrc; a.download = `${quizTitle || 'quiz'}-QRCode.png`; a.click()
+  }
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal-box" onClick={e=>e.stopPropagation()} style={{textAlign:'center',maxWidth:360}}>
+        <div className="modal-title" style={{marginBottom:4}}>📱 學生掃描入口</div>
+        <div style={{fontSize:13,color:'var(--ink2)',marginBottom:20}}>{quizTitle}</div>
+        {qrSrc ? <img src={qrSrc} className="qr-img" width={240} height={240} alt="QR Code"/> : <div className="loading"><div className="spinner"/>產生中...</div>}
+        <div style={{fontFamily:"'DM Mono',monospace",fontSize:11,background:'#f5f3ef',padding:'8px 12px',borderRadius:6,margin:'16px 0',wordBreak:'break-all',textAlign:'left'}}>{url}</div>
+        <div style={{display:'flex',gap:10,justifyContent:'center'}}>
+          <button className="btn btn-primary" onClick={handleDownload} disabled={!qrSrc}>⬇ 下載 QR Code</button>
+          <button className="btn btn-secondary" onClick={onClose}>關閉</button>
+        </div>
+      </div>
+    </div>
+  )
 }
 
 // ─── Login ────────────────────────────────────────────────────────────────────
@@ -429,11 +461,11 @@ function LoginPage() {
               <path fill="#EA4335" d="M8.98 4.18c1.17 0 2.23.4 3.06 1.2l2.3-2.3A8 8 0 0 0 1.83 5.4L4.5 7.49a4.77 4.77 0 0 1 4.48-3.3z"/>
             </svg>
           )}
-          {loading ? '登入中...' : '使用 Google 帳號登入'}
+          {loading?'登入中...':'使用 Google 帳號登入'}
         </button>
         {error && <div style={{marginTop:12,fontSize:13,color:'var(--danger)',textAlign:'center'}}>{error}</div>}
         <div className="login-features">
-          {['每位老師獨立空間，資料安全分離','支援 Excel 批量匯入與成績匯出','學生無需登入，輸入班級座號即可作答'].map(f => (
+          {['每位老師獨立空間，資料安全分離','班級名單匯入，學生選座號自動帶出姓名','支援數學公式顯示與 QR Code 分發'].map(f => (
             <div key={f} className="feat-item"><div className="feat-dot"/>{f}</div>
           ))}
         </div>
@@ -448,11 +480,9 @@ function Sidebar({ hash, user, displayName, onLogout, onEditProfile }) {
   const showName = displayName || user?.displayName || user?.email || ''
   const initial = showName[0] || '?'
   const teacherNav = [
-    { path:'/',         icon:'◉', label:'我的測驗' },
-    { path:'/create',   icon:'＋', label:'新增測驗' },
-  ]
-  const adminNav = [
-    { path:'/admin',    icon:'⊞', label:'管理後台', adminClass:true },
+    { path:'/', icon:'◉', label:'我的測驗' },
+    { path:'/create', icon:'＋', label:'新增測驗' },
+    { path:'/roster', icon:'📚', label:'班級名單' },
   ]
   return (
     <div className="sidebar">
@@ -463,29 +493,22 @@ function Sidebar({ hash, user, displayName, onLogout, onEditProfile }) {
       </div>
       <div className="sidebar-nav">
         {teacherNav.map(n => (
-          <div key={n.path} className={`nav-item ${hash===n.path?'active':''}`} onClick={() => navigate(n.path)}>
+          <div key={n.path} className={`nav-item ${hash===n.path?'active':''}`} onClick={()=>navigate(n.path)}>
             <span className="nav-icon">{n.icon}</span>{n.label}
           </div>
         ))}
-        {admin && (
-          <>
-            <div style={{height:1,background:'rgba(255,255,255,.08)',margin:'8px 4px'}}/>
-            {adminNav.map(n => (
-              <div key={n.path} className={`nav-item ${n.adminClass?'admin-nav':''} ${hash===n.path?'active':''}`}
-                onClick={() => navigate(n.path)}>
-                <span className="nav-icon">{n.icon}</span>{n.label}
-              </div>
-            ))}
-          </>
-        )}
+        {admin && <>
+          <div style={{height:1,background:'rgba(255,255,255,.08)',margin:'8px 4px'}}/>
+          <div className={`nav-item admin-nav ${hash==='/admin'?'active':''}`} onClick={()=>navigate('/admin')}>
+            <span className="nav-icon">⊞</span>管理後台
+          </div>
+        </>}
       </div>
       <div className="sidebar-user">
-        <div className={`user-avatar ${admin?'admin-avatar':''}`}>{initial.toUpperCase()}</div>
+        <div className={`user-avatar ${admin?'admin-av':''}`}>{initial.toUpperCase()}</div>
         <div style={{overflow:'hidden',flex:1}}>
           <div className="user-name">{showName}</div>
-          <div style={{fontSize:11,color:'rgba(255,255,255,.3)',cursor:'pointer',marginTop:1}} onClick={onEditProfile}>
-            ✏️ 修改名稱
-          </div>
+          <div style={{fontSize:11,color:'rgba(255,255,255,.35)',cursor:'pointer',marginTop:1}} onClick={onEditProfile}>✏️ 修改名稱</div>
         </div>
         <div className="logout-btn" onClick={onLogout}>登出</div>
       </div>
@@ -502,113 +525,230 @@ function AdminPanel() {
 
   useEffect(() => {
     async function load() {
-      const [qSnap, rSnap] = await Promise.all([
-        getDocs(collection(db, 'quizzes')),
-        getDocs(collection(db, 'responses')),
-      ])
-      const allQuizzes = qSnap.docs.map(d => ({ id: d.id, ...d.data() }))
-      const allResponses = rSnap.docs.map(d => ({ id: d.id, ...d.data() }))
-
-      // 彙整老師資料
-      const teacherMap = {}
-      allQuizzes.forEach(q => {
-        const id = q.teacherId
-        if (!teacherMap[id]) teacherMap[id] = { id, name: q.teacherName || '未知', email: '', quizCount: 0, responseCount: 0 }
-        teacherMap[id].quizCount++
-        teacherMap[id].responseCount += allResponses.filter(r => r.quizId === q.id).length
+      const [qSnap, rSnap] = await Promise.all([getDocs(collection(db,'quizzes')), getDocs(collection(db,'responses'))])
+      const allQ = qSnap.docs.map(d=>({id:d.id,...d.data()}))
+      const allR = rSnap.docs.map(d=>({id:d.id,...d.data()}))
+      const tMap = {}
+      allQ.forEach(q => {
+        if (!tMap[q.teacherId]) tMap[q.teacherId] = { id:q.teacherId, name:q.teacherName||'未知', quizCount:0, responseCount:0 }
+        tMap[q.teacherId].quizCount++
+        tMap[q.teacherId].responseCount += allR.filter(r=>r.quizId===q.id).length
       })
-      setTeachers(Object.values(teacherMap).sort((a, b) => b.quizCount - a.quizCount))
-      setQuizzes(allQuizzes)
-      setResponses(allResponses)
-      setLoading(false)
+      setTeachers(Object.values(tMap).sort((a,b)=>b.quizCount-a.quizCount))
+      setQuizzes(allQ); setResponses(allR); setLoading(false)
     }
     load()
   }, [])
 
   if (loading) return <div className="loading"><div className="spinner"/>載入中...</div>
-
-  const totalResponses = responses.length
-  const avgResponsesPerQuiz = quizzes.length ? Math.round(totalResponses / quizzes.length) : 0
-
   return (
     <div>
       <div className="admin-header">
         <div className="admin-header-title">⊞ 系統管理後台</div>
         <div className="admin-header-sub">查看所有老師的使用狀況與全站統計</div>
       </div>
-
       <div className="stats-row">
-        {[
-          { label:'老師帳號數', value: teachers.length, sub:'位老師', color:'var(--admin)' },
-          { label:'測驗總數',   value: quizzes.length,  sub:'份測驗' },
-          { label:'作答總次數', value: totalResponses,   sub:'筆紀錄', color:'var(--accent)' },
-          { label:'平均每份',   value: avgResponsesPerQuiz, sub:'人作答' },
-        ].map(s => (
+        {[{label:'老師帳號',value:teachers.length,sub:'位',color:'var(--admin)'},
+          {label:'測驗總數',value:quizzes.length,sub:'份'},
+          {label:'作答次數',value:responses.length,sub:'筆',color:'var(--accent)'},
+          {label:'平均每份',value:quizzes.length?Math.round(responses.length/quizzes.length):0,sub:'人作答'}
+        ].map(s=>(
           <div key={s.label} className="stat-box">
             <div className="stat-label">{s.label}</div>
-            <div className="stat-value" style={{color: s.color || 'var(--ink)'}}>{s.value}</div>
+            <div className="stat-value" style={{color:s.color||'var(--ink)'}}>{s.value}</div>
             <div className="stat-sub">{s.sub}</div>
           </div>
         ))}
       </div>
-
-      <div className="card" style={{marginBottom:20}}>
+      <div className="card" style={{marginBottom:16}}>
         <div style={{fontSize:16,fontWeight:700,marginBottom:20}}>👩‍🏫 老師帳號統計</div>
-        {teachers.length === 0 ? (
-          <div className="empty-state" style={{padding:40}}>
-            <div className="empty-icon">📭</div><div>目前還沒有老師登入使用</div>
-          </div>
-        ) : teachers.map((t, i) => (
+        {teachers.length===0 ? <div className="empty-state" style={{padding:40}}><div>目前還沒有老師登入</div></div>
+          : teachers.map(t=>(
           <div key={t.id} className="teacher-row">
             <div className="teacher-info">
-              <div className="teacher-avatar">{(t.name?.[0] || '?').toUpperCase()}</div>
-              <div>
-                <div className="teacher-name">{t.name}</div>
-                <div className="teacher-email">{t.id}</div>
-              </div>
+              <div className="teacher-avatar">{(t.name?.[0]||'?').toUpperCase()}</div>
+              <div><div className="teacher-name">{t.name}</div><div className="teacher-email">{t.id}</div></div>
             </div>
             <div className="teacher-stats">
-              <div className="t-stat">
-                <div className="t-stat-val">{t.quizCount}</div>
-                <div className="t-stat-lab">測驗數</div>
-              </div>
-              <div className="t-stat">
-                <div className="t-stat-val">{t.responseCount}</div>
-                <div className="t-stat-lab">作答數</div>
-              </div>
+              <div className="t-stat"><div className="t-stat-val">{t.quizCount}</div><div className="t-stat-lab">測驗數</div></div>
+              <div className="t-stat"><div className="t-stat-val">{t.responseCount}</div><div className="t-stat-lab">作答數</div></div>
             </div>
           </div>
         ))}
       </div>
+    </div>
+  )
+}
 
-      <div className="card">
-        <div style={{fontSize:16,fontWeight:700,marginBottom:16}}>📋 所有測驗列表</div>
-        {quizzes.length === 0 ? (
-          <div className="empty-state" style={{padding:40}}><div>目前沒有測驗</div></div>
-        ) : (
-          <div style={{overflowX:'auto'}}>
-            <table>
-              <thead><tr><th>測驗名稱</th><th>老師</th><th>科目</th><th>題數</th><th>作答人數</th><th>建立日期</th></tr></thead>
-              <tbody>
-                {quizzes.sort((a,b) => (b.createdAt?.seconds||0) - (a.createdAt?.seconds||0)).map(q => (
-                  <tr key={q.id}>
-                    <td style={{fontWeight:600}}>{q.title}</td>
-                    <td style={{fontSize:13,color:'var(--ink2)'}}>{q.teacherName || '-'}</td>
-                    <td><span className="quiz-tag-pill" style={{marginBottom:0}}>{q.subject || '-'}</span></td>
-                    <td>{q.questions?.length || 0} 題</td>
-                    <td>
-                      <span className="score-badge score-high">
-                        {responses.filter(r => r.quizId === q.id).length} 人
-                      </span>
-                    </td>
-                    <td style={{fontSize:13,color:'var(--ink2)'}}>{formatDate(q.createdAt)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
+// ─── Roster Manager ───────────────────────────────────────────────────────────
+function RosterManager({ user }) {
+  const [classes, setClasses] = useState({})
+  const [loading, setLoading] = useState(true)
+  const [newClass, setNewClass] = useState('')
+  const [editClass, setEditClass] = useState(null) // { name, seat, studentName }
+  const [newSeat, setNewSeat] = useState('')
+  const [newStudentName, setNewStudentName] = useState('')
+  const [toast, setToast] = useState('')
+
+  useEffect(() => {
+    getDoc(doc(db,'rosters',user.uid)).then(snap => {
+      if (snap.exists()) setClasses(snap.data().classes||{})
+      setLoading(false)
+    }).catch(()=>setLoading(false))
+  }, [user.uid])
+
+  const saveRoster = async (updated) => {
+    await setDoc(doc(db,'rosters',user.uid), { classes:updated, updatedAt:serverTimestamp() })
+    setClasses(updated)
+  }
+
+  const handleAddClass = async () => {
+    const name = newClass.trim(); if (!name||classes[name]) return
+    const updated = { ...classes, [name]:[] }
+    await saveRoster(updated); setNewClass('')
+    setToast(`已新增班級 ${name}`); setTimeout(()=>setToast(''),2000)
+  }
+
+  const handleDeleteClass = async (name) => {
+    if (!confirm(`確定刪除班級 ${name} 的所有名單？`)) return
+    const updated = {...classes}; delete updated[name]
+    await saveRoster(updated)
+    setToast(`已刪除班級 ${name}`); setTimeout(()=>setToast(''),2000)
+  }
+
+  const handleAddStudent = async (cls) => {
+    const seat = padSeat(newSeat), name = newStudentName.trim()
+    if (!seat||!name) return
+    const updated = {...classes, [cls]:[...(classes[cls]||[])]}
+    const idx = updated[cls].findIndex(s=>s.seat===seat)
+    if (idx>=0) updated[cls][idx]={seat,name}
+    else updated[cls].push({seat,name})
+    updated[cls].sort((a,b)=>a.seat.localeCompare(b.seat))
+    await saveRoster(updated); setNewSeat(''); setNewStudentName('')
+    setToast('已儲存'); setTimeout(()=>setToast(''),2000)
+  }
+
+  const handleDeleteStudent = async (cls, seat) => {
+    const updated = {...classes, [cls]:classes[cls].filter(s=>s.seat!==seat)}
+    await saveRoster(updated)
+  }
+
+  const handleExcelUpload = (e) => {
+    const file = e.target.files[0]; if (!file) return
+    e.target.value = ''
+    const reader = new FileReader()
+    reader.onload = async (ev) => {
+      try {
+        const wb = XLSX.read(ev.target.result, {type:'binary'})
+        const ws = wb.Sheets[wb.SheetNames[0]]
+        const rows = XLSX.utils.sheet_to_json(ws, {header:1, raw:false, defval:''})
+        const updated = {...classes}
+        rows.slice(1).filter(r=>r[0]&&r[2]).forEach(r => {
+          const cls = String(r[0]).trim()
+          const seat = padSeat(r[1])
+          const name = String(r[2]).trim()
+          if (!updated[cls]) updated[cls] = []
+          const idx = updated[cls].findIndex(s=>s.seat===seat)
+          if (idx>=0) updated[cls][idx]={seat,name}
+          else updated[cls].push({seat,name})
+        })
+        Object.keys(updated).forEach(c=>updated[c].sort((a,b)=>a.seat.localeCompare(b.seat)))
+        await saveRoster(updated)
+        setToast('名單匯入成功！'); setTimeout(()=>setToast(''),2500)
+      } catch { alert('Excel 格式錯誤') }
+    }
+    reader.readAsBinaryString(file)
+  }
+
+  const exportRosterExcel = () => {
+    const rows = []
+    Object.entries(classes).forEach(([cls, students]) => {
+      students.forEach(s => rows.push({'班級':cls,'座號':s.seat,'姓名':s.name}))
+    })
+    if (!rows.length) { alert('沒有名單資料'); return }
+    const wb = XLSX.utils.book_new()
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), '班級名單')
+    XLSX.writeFile(wb, '班級名單.xlsx')
+  }
+
+  if (loading) return <div className="loading"><div className="spinner"/>載入中...</div>
+
+  return (
+    <div>
+      <div className="page-header">
+        <div><div className="page-title">班級名單</div>
+          <div className="page-sub">匯入名單後，學生作答只需選班級座號，姓名自動帶出</div></div>
+        <div style={{display:'flex',gap:8}}>
+          <button className="btn btn-excel" onClick={exportRosterExcel}>📥 匯出名單</button>
+          <label className="btn btn-secondary" style={{cursor:'pointer'}}>
+            📊 匯入 Excel
+            <input type="file" accept=".xlsx,.xls" style={{display:'none'}} onChange={handleExcelUpload}/>
+          </label>
+        </div>
       </div>
+
+      <div className="card" style={{marginBottom:20}}>
+        <div style={{fontSize:13,fontWeight:700,marginBottom:12}}>Excel 格式（第一列為標題）：</div>
+        <div style={{overflowX:'auto'}}>
+          <table style={{fontSize:12,width:'auto'}}>
+            <thead><tr>
+              {['班級','座號','姓名'].map(h=>(
+                <th key={h} style={{padding:'5px 12px',background:'#f0ede8',border:'1px solid var(--border)'}}>{h}</th>
+              ))}
+            </tr></thead>
+            <tbody>
+              {[['103','01','陳小明'],['103','02','李美華'],['105','01','張大偉']].map((r,i)=>(
+                <tr key={i}>{r.map((c,j)=><td key={j} style={{padding:'5px 12px',border:'1px solid var(--border)',color:'var(--ink2)'}}>{c}</td>)}</tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {/* Add new class */}
+      <div style={{display:'flex',gap:10,marginBottom:20}}>
+        <input className="form-input" placeholder="新班級名稱（如 103）" value={newClass}
+          onChange={e=>setNewClass(e.target.value)} onKeyDown={e=>e.key==='Enter'&&handleAddClass()} style={{maxWidth:240}}/>
+        <button className="btn btn-primary" onClick={handleAddClass} disabled={!newClass.trim()}>新增班級</button>
+      </div>
+
+      {Object.keys(classes).length===0 ? (
+        <div className="empty-state"><div className="empty-icon">📚</div><div>還沒有班級名單，請上傳 Excel 或新增班級</div></div>
+      ) : Object.entries(classes).sort(([a],[b])=>a.localeCompare(b)).map(([cls,students])=>(
+        <div key={cls} className="roster-class-block">
+          <div className="roster-class-header">
+            <div className="roster-class-name">📋 {cls} 班 <span style={{fontSize:13,color:'var(--ink2)',fontWeight:400}}>（{students.length} 人）</span></div>
+            <div style={{display:'flex',gap:8,alignItems:'center'}}>
+              <button className="btn btn-secondary btn-sm" onClick={()=>setEditClass(editClass===cls?null:cls)}>
+                {editClass===cls?'收起':'✎ 新增學生'}
+              </button>
+              <button className="btn btn-sm" style={{background:'#ffeee8',color:'var(--danger)',border:'1px solid #fcd5c5'}}
+                onClick={()=>handleDeleteClass(cls)}>刪除班級</button>
+            </div>
+          </div>
+          {editClass===cls && (
+            <div style={{padding:'12px 18px',background:'#f9f8f6',borderBottom:'1px solid var(--border)',display:'flex',gap:8,flexWrap:'wrap'}}>
+              <input className="form-input" placeholder="座號（輸入1即為01）" value={newSeat}
+                onChange={e=>setNewSeat(e.target.value)} style={{width:160}}/>
+              <input className="form-input" placeholder="姓名" value={newStudentName}
+                onChange={e=>setNewStudentName(e.target.value)} style={{width:160}}
+                onKeyDown={e=>e.key==='Enter'&&handleAddStudent(cls)}/>
+              <button className="btn btn-primary" onClick={()=>handleAddStudent(cls)}
+                disabled={!newSeat||!newStudentName.trim()}>新增 / 更新</button>
+            </div>
+          )}
+          <div className="roster-student-grid">
+            {students.map(s=>(
+              <div key={s.seat} className="roster-student">
+                <span className="roster-seat">{s.seat}</span>
+                <span className="roster-name">{s.name}</span>
+                <span style={{marginLeft:'auto',cursor:'pointer',color:'var(--danger)',fontSize:12}} onClick={()=>handleDeleteStudent(cls,s.seat)}>✕</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      ))}
+      {toast && <Toast msg={toast}/>}
     </div>
   )
 }
@@ -619,49 +759,42 @@ function Dashboard({ user }) {
   const [responseCounts, setResponseCounts] = useState({})
   const [loading, setLoading] = useState(true)
   const [toast, setToast] = useState('')
-  const [deleteTarget, setDeleteTarget] = useState(null) // {id, title}
-  const [deleting, setDeleting] = useState(false)
+  const [deleteTarget, setDeleteTarget] = useState(null)
+  const [qrTarget, setQrTarget] = useState(null)
 
   useEffect(() => {
     async function load() {
       try {
-        const q = query(collection(db,'quizzes'), where('teacherId','==',user.uid))
-        const snap = await getDocs(q)
-        const list = snap.docs.map(d => ({ id:d.id, ...d.data() }))
-          .sort((a,b) => (b.createdAt?.seconds||0) - (a.createdAt?.seconds||0))
+        const snap = await getDocs(query(collection(db,'quizzes'), where('teacherId','==',user.uid)))
+        const list = snap.docs.map(d=>({id:d.id,...d.data()}))
+          .sort((a,b)=>(b.createdAt?.seconds||0)-(a.createdAt?.seconds||0))
         setQuizzes(list)
         const counts = {}
-        await Promise.all(list.map(async quiz => {
-          const rs = await getDocs(query(collection(db,'responses'), where('quizId','==',quiz.id)))
-          counts[quiz.id] = rs.size
+        await Promise.all(list.map(async q => {
+          const rs = await getDocs(query(collection(db,'responses'), where('quizId','==',q.id)))
+          counts[q.id] = rs.size
         }))
         setResponseCounts(counts)
-      } catch(e) { console.error(e) }
+      } catch(e){console.error(e)}
       setLoading(false)
     }
     load()
   }, [user.uid])
 
   const copyLink = (id) => {
-    const url = `${window.location.origin}${window.location.pathname}#/s/${id}`
-    navigator.clipboard.writeText(url)
-    setToast('連結已複製！'); setTimeout(() => setToast(''), 2000)
+    navigator.clipboard.writeText(`${window.location.origin}${window.location.pathname}#/s/${id}`)
+    setToast('連結已複製！'); setTimeout(()=>setToast(''),2000)
   }
 
   const handleDeleteConfirm = async () => {
     if (!deleteTarget) return
-    setDeleting(true)
     try {
-      // 刪除所有學生作答紀錄
       const rSnap = await getDocs(query(collection(db,'responses'), where('quizId','==',deleteTarget.id)))
-      await Promise.all(rSnap.docs.map(d => deleteDoc(d.ref)))
-      // 刪除測驗本身
+      await Promise.all(rSnap.docs.map(d=>deleteDoc(d.ref)))
       await deleteDoc(doc(db,'quizzes',deleteTarget.id))
-      setQuizzes(prev => prev.filter(q => q.id !== deleteTarget.id))
-      setToast(`「${deleteTarget.title}」已刪除`)
-      setTimeout(() => setToast(''), 2500)
-    } catch(e) { console.error(e); alert('刪除失敗') }
-    setDeleting(false)
+      setQuizzes(prev=>prev.filter(q=>q.id!==deleteTarget.id))
+      setToast(`「${deleteTarget.title}」已刪除`); setTimeout(()=>setToast(''),2500)
+    } catch(e){console.error(e); alert('刪除失敗')}
     setDeleteTarget(null)
   }
 
@@ -671,61 +804,61 @@ function Dashboard({ user }) {
     <div>
       <div className="page-header">
         <div><div className="page-title">我的測驗</div><div className="page-sub">管理你建立的所有測驗卷</div></div>
-        <button className="btn btn-primary" onClick={() => navigate('/create')}>＋ 新增測驗</button>
+        <button className="btn btn-primary" onClick={()=>navigate('/create')}>＋ 新增測驗</button>
       </div>
-      {quizzes.length === 0 ? (
+      {quizzes.length===0 ? (
         <div className="empty-state">
           <div className="empty-icon">📋</div>
           <div style={{fontSize:16,fontWeight:600,marginBottom:8}}>還沒有測驗</div>
-          <button className="btn btn-primary" onClick={() => navigate('/create')}>＋ 新增測驗</button>
+          <button className="btn btn-primary" onClick={()=>navigate('/create')}>＋ 新增測驗</button>
         </div>
       ) : (
         <div className="quiz-grid">
-          {quizzes.map(q => (
+          {quizzes.map(q=>(
             <div key={q.id} className="quiz-card">
               <div style={{display:'flex',alignItems:'flex-start',justifyContent:'space-between',marginBottom:8}}>
-                <div className="quiz-tag-pill">{q.subject || '未分類'}</div>
-                <button
-                  onClick={() => setDeleteTarget({id:q.id, title:q.title})}
-                  style={{background:'none',border:'none',cursor:'pointer',fontSize:14,color:'var(--ink2)',padding:'2px 4px',borderRadius:4,lineHeight:1}}
-                  title="刪除測驗">🗑️</button>
+                <div className="quiz-tag-pill">{q.subject||'未分類'}</div>
+                <button onClick={()=>setDeleteTarget({id:q.id,title:q.title})}
+                  style={{background:'none',border:'none',cursor:'pointer',fontSize:14,color:'var(--ink2)',padding:'2px 4px'}}>🗑️</button>
               </div>
               <div className="quiz-name">{q.title}</div>
               <div className="quiz-meta">
-                <span>📝 {q.questions?.length || 0} 題</span>
-                <span>👥 {responseCounts[q.id] || 0} 人作答</span>
-                <span>🗓 {formatDate(q.createdAt)}</span>
+                <span>📝 {q.questions?.length||0} 題</span>
+                <span>👥 {responseCounts[q.id]||0} 人次</span>
+                <span>🗓 {fmtDate(q.createdAt)}</span>
+                {q.settings?.allowMultipleAttempts===false && <span style={{color:'var(--danger)'}}>🔒 限一次</span>}
               </div>
               <div className="quiz-url">
                 <span style={{overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>...#/s/{q.id}</span>
-                <span className="copy-btn" onClick={() => copyLink(q.id)}>複製連結</span>
+                <span className="copy-btn" onClick={()=>copyLink(q.id)}>複製連結</span>
               </div>
-              <div style={{display:'flex',gap:8,marginTop:12}}>
-                <button className="btn btn-secondary btn-sm" style={{flex:1}} onClick={() => navigate(`/results/${q.id}`)}>📊 成績</button>
-                <button className="btn btn-secondary btn-sm" style={{flex:1}} onClick={() => navigate(`/analytics/${q.id}`)}>📈 分析</button>
+              <div style={{display:'flex',gap:6,marginTop:12,flexWrap:'wrap'}}>
+                <button className="btn btn-secondary btn-sm" style={{flex:1}} onClick={()=>navigate(`/results/${q.id}`)}>📊 成績</button>
+                <button className="btn btn-secondary btn-sm" style={{flex:1}} onClick={()=>navigate(`/analytics/${q.id}`)}>📈 分析</button>
+                <button className="btn btn-secondary btn-sm" onClick={()=>setQrTarget(q)} title="QR Code">
+                  📱
+                </button>
               </div>
             </div>
           ))}
-          <div className="new-quiz-card" onClick={() => navigate('/create')}>
+          <div className="new-quiz-card" onClick={()=>navigate('/create')}>
             <span style={{fontSize:20}}>＋</span>建立新測驗
           </div>
         </div>
       )}
       {toast && <Toast msg={toast}/>}
-      {deleteTarget && (
-        <ConfirmModal
-          title="刪除測驗"
-          message={`確定要刪除「${deleteTarget.title}」嗎？\n此測驗的所有學生作答紀錄也會一併刪除，無法復原。`}
-          onConfirm={handleDeleteConfirm}
-          onCancel={() => setDeleteTarget(null)}
-        />
-      )}
+      {deleteTarget && <ConfirmModal title="刪除測驗"
+        message={`確定要刪除「${deleteTarget.title}」嗎？\n所有學生作答紀錄也會一併刪除，無法復原。`}
+        onConfirm={handleDeleteConfirm} onCancel={()=>setDeleteTarget(null)}/>}
+      {qrTarget && <QRModal
+        url={`${window.location.origin}${window.location.pathname}#/s/${qrTarget.id}`}
+        quizTitle={qrTarget.title} onClose={()=>setQrTarget(null)}/>}
     </div>
   )
 }
 
 // ─── Create Quiz ──────────────────────────────────────────────────────────────
-const emptyQ = () => ({ text:'', options:['','','',''], correct:0, points:10, hint:'', explanation:'', showHint:false, showExpl:false })
+const emptyQ = () => ({text:'',options:['','','',''],correct:0,points:10,hint:'',explanation:'',showHint:false,showExpl:false})
 
 function CreateQuiz({ user }) {
   const [mode, setMode] = useState('manual')
@@ -734,52 +867,43 @@ function CreateQuiz({ user }) {
   const [allowHint, setAllowHint] = useState(true)
   const [showExplAfter, setShowExplAfter] = useState(true)
   const [showCorrect, setShowCorrect] = useState(true)
+  const [allowMultipleAttempts, setAllowMultipleAttempts] = useState(true)
+  const [allowedClasses, setAllowedClasses] = useState('')
+  const [useRoster, setUseRoster] = useState(false)
+  const [allowNameEdit, setAllowNameEdit] = useState(true)
   const [questions, setQuestions] = useState([emptyQ()])
   const [saving, setSaving] = useState(false)
   const [createdId, setCreatedId] = useState(null)
   const [toast, setToast] = useState('')
-
   const [pasteText, setPasteText] = useState('')
   const [pastePreview, setPastePreview] = useState(null)
 
+  const addQ = () => setQuestions(p=>[...p,emptyQ()])
+  const removeQ = i => setQuestions(p=>p.filter((_,idx)=>idx!==i))
+  const updateQ = (i,f,v) => setQuestions(p=>{const q=[...p];q[i]={...q[i],[f]:v};return q})
+  const updateOpt = (qi,oi,v) => setQuestions(p=>{const q=[...p];q[qi].options[oi]=v;return q})
+  const toggleField = (i,f) => setQuestions(p=>{const q=[...p];q[i]={...q[i],[f]:!q[i][f]};return q})
+
   const handlePasteChange = (text) => {
     setPasteText(text)
-    if (text.trim()) {
-      const parsed = parsePasteText(text)
-      setPastePreview(parsed)
-    } else {
-      setPastePreview(null)
-    }
+    setPastePreview(text.trim() ? parsePasteText(text) : null)
   }
-
   const handlePasteImport = () => {
-    if (!pastePreview || pastePreview.length === 0) { alert('無法解析，請確認格式'); return }
-    setQuestions(pastePreview)
-    setPasteText(''); setPastePreview(null); setMode('manual')
+    if (!pastePreview?.length) return
+    setQuestions(pastePreview); setPasteText(''); setPastePreview(null); setMode('manual')
     setToast(`成功匯入 ${pastePreview.length} 道題目`); setTimeout(()=>setToast(''),2000)
   }
 
-  const addQ = () => setQuestions(p => [...p, emptyQ()])
-  const removeQ = i => setQuestions(p => p.filter((_,idx) => idx!==i))
-  const updateQ = (i,f,v) => setQuestions(p => { const q=[...p]; q[i]={...q[i],[f]:v}; return q })
-  const updateOpt = (qi,oi,v) => setQuestions(p => { const q=[...p]; q[qi].options[oi]=v; return q })
-  const toggleField = (i,f) => setQuestions(p => { const q=[...p]; q[i]={...q[i],[f]:!q[i][f]}; return q })
-
   const handleExcel = (e) => {
-    const file = e.target.files[0]; if (!file) return
+    const file = e.target.files[0]; if (!file) return; e.target.value=''
     const reader = new FileReader()
     reader.onload = (ev) => {
       try {
-        const wb = XLSX.read(ev.target.result, { type:'binary' })
-        const ws = wb.Sheets[wb.SheetNames[0]]
-        // raw:false → forces all cells to formatted string, prevents 3/8 → 0.375
-        const rows = XLSX.utils.sheet_to_json(ws, { header:1, raw:false, defval:'' })
+        const wb = XLSX.read(ev.target.result, {type:'binary'})
+        const rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], {header:1,raw:false,defval:''})
         const parsed = parseQuestionRows(rows)
-        if (parsed.length > 0) {
-          setQuestions(parsed); setMode('manual')
-          setToast(`成功匯入 ${parsed.length} 道題目`); setTimeout(()=>setToast(''),2000)
-        }
-      } catch { alert('Excel 格式錯誤，請確認欄位格式') }
+        if (parsed.length) { setQuestions(parsed); setMode('manual'); setToast(`匯入 ${parsed.length} 道題目`); setTimeout(()=>setToast(''),2000) }
+      } catch { alert('Excel 格式錯誤') }
     }
     reader.readAsBinaryString(file)
   }
@@ -789,12 +913,13 @@ function CreateQuiz({ user }) {
     if (questions.some(q=>!q.text.trim())) { alert('請填寫所有題目'); return }
     setSaving(true)
     try {
-      const clean = questions.map(({ showHint, showExpl, ...q }) => q)
+      const clean = questions.map(({showHint,showExpl,...q})=>q)
+      const classes = allowedClasses.split(',').map(s=>s.trim()).filter(Boolean)
       const docRef = await addDoc(collection(db,'quizzes'), {
-        teacherId: user.uid, teacherName: user.displayName || user.email,
-        title: title.trim(), subject: subject.trim()||'未分類',
-        questions: clean, settings: { allowHint, showExplAfter, showCorrect },
-        createdAt: serverTimestamp(),
+        teacherId:user.uid, teacherName:user.displayName||user.email,
+        title:title.trim(), subject:subject.trim()||'未分類', questions:clean,
+        settings:{ allowHint, showExplAfter, showCorrect, allowMultipleAttempts, allowedClasses:classes, useRoster, allowNameEdit },
+        createdAt:serverTimestamp(),
       })
       setCreatedId(docRef.id)
     } catch(e) { alert('儲存失敗，請確認 Firebase 設定'); console.error(e) }
@@ -807,122 +932,148 @@ function CreateQuiz({ user }) {
       <div style={{maxWidth:480,margin:'60px auto',textAlign:'center'}}>
         <div style={{fontSize:48,marginBottom:16}}>🎉</div>
         <div style={{fontSize:22,fontWeight:700,marginBottom:8}}>測驗已建立！</div>
-        <div style={{fontSize:14,color:'var(--ink2)',marginBottom:24}}>將以下連結傳給學生即可開始作答</div>
         <div className="card" style={{padding:20,marginBottom:16}}>
-          <div style={{fontFamily:"'DM Mono',monospace",fontSize:13,background:'#f5f3ef',padding:'10px 14px',borderRadius:8,marginBottom:12,wordBreak:'break-all'}}>{url}</div>
-          <button className="btn btn-primary" style={{width:'100%'}} onClick={() => navigator.clipboard.writeText(url)}>複製學生作答連結</button>
+          <div style={{fontFamily:"'DM Mono',monospace",fontSize:12,background:'#f5f3ef',padding:'10px 14px',borderRadius:8,marginBottom:12,wordBreak:'break-all'}}>{url}</div>
+          <button className="btn btn-primary" style={{width:'100%',marginBottom:8}} onClick={()=>navigator.clipboard.writeText(url)}>複製學生作答連結</button>
         </div>
         <div style={{display:'flex',gap:10,justifyContent:'center'}}>
-          <button className="btn btn-secondary" onClick={() => navigate('/')}>回到首頁</button>
-          <button className="btn btn-secondary" onClick={() => { setCreatedId(null);setTitle('');setSubject('');setQuestions([emptyQ()]) }}>再建一份</button>
+          <button className="btn btn-secondary" onClick={()=>navigate('/')}>回到首頁</button>
+          <button className="btn btn-secondary" onClick={()=>{setCreatedId(null);setTitle('');setSubject('');setQuestions([emptyQ()])}}>再建一份</button>
         </div>
       </div>
     )
   }
 
   return (
-    <div style={{maxWidth:700}}>
+    <div style={{maxWidth:720}}>
       <div className="page-header">
-        <div><div className="page-title">新增測驗</div><div className="page-sub">手動輸入或上傳 Excel，可為每題設定提示與解析</div></div>
+        <div><div className="page-title">新增測驗</div><div className="page-sub">手動輸入、上傳 Excel 或貼上 AI 生成的題目</div></div>
       </div>
       <div className="tabs">
         <div className={`tab ${mode==='manual'?'active':''}`} onClick={()=>setMode('manual')}>✎ 手動輸入</div>
         <div className={`tab ${mode==='excel'?'active':''}`} onClick={()=>setMode('excel')}>📊 上傳 Excel</div>
         <div className={`tab ${mode==='paste'?'active':''}`} onClick={()=>setMode('paste')}>📋 貼上文字</div>
       </div>
+
       {mode==='excel' && (
         <div className="card" style={{marginBottom:20}}>
           <label className="upload-zone" style={{display:'block'}}>
             <div style={{fontSize:36,marginBottom:12}}>📊</div>
-            <div style={{fontSize:14,fontWeight:600,marginBottom:6}}>點擊選擇 Excel 檔案</div>
-            <div style={{fontSize:12,color:'var(--ink2)'}}>支援 .xlsx / .xls · 分數如 3/8 會正確保留</div>
+            <div style={{fontSize:14,fontWeight:600,marginBottom:6}}>點擊上傳 Excel（支援 .xlsx/.xls）</div>
+            <div style={{fontSize:12,color:'var(--ink2)'}}>分數如 3/8 會正確保留，不會變成小數</div>
             <input type="file" accept=".xlsx,.xls" style={{display:'none'}} onChange={handleExcel}/>
           </label>
-          <div style={{marginTop:16}}>
-            <div style={{fontSize:12,fontWeight:600,marginBottom:8,color:'var(--ink2)'}}>Excel 欄位格式（第一列為標題）：</div>
-            <div style={{overflowX:'auto'}}>
-              <table style={{fontSize:11}}>
-                <thead><tr>
-                  {['題目','選A','選B','選C','選D','正確(A/B/C/D)','配分','提示(選填)','解析(選填)'].map(h=>(
-                    <th key={h} style={{padding:'5px 8px',background:'#f0ede8',border:'1px solid var(--border)',whiteSpace:'nowrap'}}>{h}</th>
-                  ))}
-                </tr></thead>
-                <tbody><tr>
-                  {['算算看3/8+...','1/4','3/8','1/2','5/8','B','10','分母相同時...','分母不變分子相加'].map((c,i)=>(
-                    <td key={i} style={{padding:'5px 8px',border:'1px solid var(--border)',color:'var(--ink2)',whiteSpace:'nowrap'}}>{c}</td>
-                  ))}
-                </tr></tbody>
-              </table>
-            </div>
+          <div style={{marginTop:16,fontSize:12,fontWeight:600,color:'var(--ink2)',marginBottom:8}}>欄位順序（第一列為標題）：</div>
+          <div style={{overflowX:'auto'}}>
+            <table style={{fontSize:11}}>
+              <thead><tr>
+                {['題目','選A','選B','選C','選D','正確(A/B/C/D)','配分','提示(選填)','解析(選填)'].map(h=>(
+                  <th key={h} style={{padding:'5px 8px',background:'#f0ede8',border:'1px solid var(--border)',whiteSpace:'nowrap'}}>{h}</th>
+                ))}
+              </tr></thead>
+              <tbody><tr>
+                {['算算看3/8+...','1/4','3/8','1/2','5/8','B','10','分母相同...','分母不變...'].map((c,i)=>(
+                  <td key={i} style={{padding:'5px 8px',border:'1px solid var(--border)',color:'var(--ink2)',whiteSpace:'nowrap'}}>{c}</td>
+                ))}
+              </tr></tbody>
+            </table>
           </div>
         </div>
       )}
+
       {mode==='paste' && (
         <div className="card" style={{marginBottom:20}}>
           <div style={{fontSize:14,fontWeight:700,marginBottom:4}}>📋 貼上 AI 生成的題目文字</div>
           <div style={{fontSize:12,color:'var(--ink2)',marginBottom:12}}>
-            請確認格式為 <b>Tab 分隔</b>，第一列是標題列，欄位順序：<br/>
+            格式為 Tab 分隔，第一列是標題列<br/>
             <span style={{fontFamily:"'DM Mono',monospace",fontSize:11,background:'#f5f3ef',padding:'2px 6px',borderRadius:4,display:'inline-block',marginTop:4}}>
               題目 + 選A + 選B + 選C + 選D + 正確答案(A/B/C/D) + 配分 + 提示 + 解析
             </span>
           </div>
-          <textarea
-            className="paste-zone"
-            placeholder={"直接把 AI 給你的表格文字貼在這裡...\n\n範例（Tab 分隔，第一列標題）：\n題目\t選A\t選B\t選C\t選D\t正確(A/B/C/D)\t配分\t提示(選填)\t解析(選填)\n小明吃了3/8個披薩...\t1/8\t3/8\t5/8\t8/3\tB\t10\t分母是份數\t全部8份吃了3份"}
-            value={pasteText}
-            onChange={e => handlePasteChange(e.target.value)}
-          />
-          {pastePreview && pastePreview.length > 0 && (
+          <textarea className="paste-zone"
+            placeholder={"直接把 AI 給你的表格文字貼在這裡...\n\n第一列必須是標題列，欄位用 Tab 分隔\n（從 ChatGPT/Claude 的表格複製通常就是 Tab 格式）"}
+            value={pasteText} onChange={e=>handlePasteChange(e.target.value)}/>
+          {pastePreview?.length>0 && (
             <div className="parse-preview">
               <div className="parse-preview-title">✅ 預覽：成功解析 {pastePreview.length} 道題目</div>
-              {pastePreview.slice(0,3).map((q,i) => (
+              {pastePreview.slice(0,3).map((q,i)=>(
                 <div key={i} className="preview-row">
-                  <div className="preview-qnum">第{i+1}題</div>
-                  <div className="preview-qtext">
-                    <div style={{fontWeight:600,marginBottom:3}}>{q.text.slice(0,40)}{q.text.length>40?'...':''}</div>
-                    <div style={{color:'var(--ink2)',fontSize:11}}>
-                      {q.options.map((o,oi) => (
+                  <div style={{fontWeight:700,color:'var(--accent)',flexShrink:0,width:40}}>第{i+1}題</div>
+                  <div style={{flex:1}}>
+                    <div style={{fontWeight:600,marginBottom:2}}>{q.text.slice(0,40)}{q.text.length>40?'...':''}</div>
+                    <div style={{fontSize:11,color:'var(--ink2)'}}>
+                      {q.options.map((o,oi)=>(
                         <span key={oi} style={{marginRight:8,color:oi===q.correct?'var(--accent)':'var(--ink2)',fontWeight:oi===q.correct?700:400}}>
-                          {['A','B','C','D'][oi]}.{o}
+                          {ABCD[oi]}.{o}
                         </span>
                       ))}
                     </div>
                   </div>
                 </div>
               ))}
-              {pastePreview.length > 3 && <div style={{fontSize:12,color:'var(--ink2)',paddingTop:8}}>...還有 {pastePreview.length-3} 道題目</div>}
+              {pastePreview.length>3 && <div style={{fontSize:12,color:'var(--ink2)',paddingTop:8}}>...還有 {pastePreview.length-3} 道題目</div>}
               <button className="btn btn-primary" style={{marginTop:12,width:'100%'}} onClick={handlePasteImport}>
                 匯入這 {pastePreview.length} 道題目 →
               </button>
             </div>
           )}
-          {pasteText && (!pastePreview || pastePreview.length === 0) && (
+          {pasteText && (!pastePreview||pastePreview.length===0) && (
             <div style={{marginTop:12,padding:'10px 14px',background:'#ffeee8',borderRadius:8,fontSize:13,color:'var(--danger)'}}>
-              ⚠️ 無法解析，請確認第一列是標題列，且欄位之間用 Tab 分隔
+              ⚠️ 無法解析，請確認第一列是標題，欄位用 Tab 分隔
             </div>
           )}
         </div>
       )}
-      {/* Main form card */}
+
       <div className="card">
         <div style={{marginBottom:20}}>
           <div className="form-row">
             <div><label className="form-label">測驗名稱 *</label>
-              <input className="form-input" placeholder="例：第三章自然科測驗" value={title} onChange={e=>setTitle(e.target.value)}/></div>
+              <input className="form-input" placeholder="例：分數運算第一章測驗" value={title} onChange={e=>setTitle(e.target.value)}/></div>
             <div><label className="form-label">科目</label>
-              <input className="form-input" placeholder="例：自然科學" value={subject} onChange={e=>setSubject(e.target.value)}/></div>
+              <input className="form-input" placeholder="例：數學" value={subject} onChange={e=>setSubject(e.target.value)}/></div>
           </div>
         </div>
-        <div style={{background:'#f5f3ef',borderRadius:8,padding:'10px 14px',marginBottom:20,display:'flex',gap:20,flexWrap:'wrap'}}>
-          <span style={{fontSize:13,fontWeight:600}}>設定</span>
-          {[[allowHint,setAllowHint,'允許學生查看提示'],[showExplAfter,setShowExplAfter,'提交後顯示解析'],[showCorrect,setShowCorrect,'顯示正確答案']].map(([v,s,l])=>(
-            <label key={l} style={{display:'flex',alignItems:'center',gap:6,fontSize:13,cursor:'pointer'}}>
-              <input type="checkbox" checked={v} onChange={e=>s(e.target.checked)} style={{accentColor:'var(--accent)'}}/>{l}
+
+        {/* Settings */}
+        <div style={{background:'#f5f3ef',borderRadius:10,padding:16,marginBottom:20}}>
+          <div style={{fontSize:13,fontWeight:700,marginBottom:12}}>⚙️ 測驗設定</div>
+          <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10}}>
+            {[
+              [allowHint,setAllowHint,'💡 允許學生查看提示'],
+              [showExplAfter,setShowExplAfter,'📖 提交後顯示解析'],
+              [showCorrect,setShowCorrect,'✓ 顯示正確答案'],
+              [allowMultipleAttempts,setAllowMultipleAttempts,'🔄 允許重複作答'],
+            ].map(([v,s,l])=>(
+              <label key={l} style={{display:'flex',alignItems:'center',gap:8,fontSize:13,cursor:'pointer',padding:'6px 0'}}>
+                <input type="checkbox" checked={v} onChange={e=>s(e.target.checked)} style={{accentColor:'var(--accent)',width:15,height:15}}/>{l}
+              </label>
+            ))}
+          </div>
+          <div style={{marginTop:12,display:'grid',gridTemplateColumns:'1fr 1fr',gap:12}}>
+            <div>
+              <label className="form-label" style={{fontSize:12}}>指定班級（留空=全班均可，逗號分隔）</label>
+              <input className="form-input" placeholder="如：103,105,107" value={allowedClasses} onChange={e=>setAllowedClasses(e.target.value)}
+                style={{fontSize:13,padding:'8px 12px'}}/>
+            </div>
+            <div>
+              <label className="form-label" style={{fontSize:12}}>學生資料輸入方式</label>
+              <select className="form-select" style={{fontSize:13,padding:'8px 12px'}} value={useRoster?'roster':'free'} onChange={e=>setUseRoster(e.target.value==='roster')}>
+                <option value="free">自由輸入班級座號姓名</option>
+                <option value="roster">使用班級名單（選座號自動帶姓名）</option>
+              </select>
+            </div>
+          </div>
+          {useRoster && (
+            <label style={{display:'flex',alignItems:'center',gap:8,fontSize:13,cursor:'pointer',padding:'8px 0 0'}}>
+              <input type="checkbox" checked={allowNameEdit} onChange={e=>setAllowNameEdit(e.target.checked)} style={{accentColor:'var(--accent)',width:15,height:15}}/>
+              允許學生修改自動帶出的姓名
             </label>
-          ))}
+          )}
         </div>
+
         <div style={{borderTop:'1px solid var(--border)',paddingTop:20}}>
-          <div style={{fontSize:14,fontWeight:700,marginBottom:16}}>📝 題目設定</div>
+          <div style={{fontSize:14,fontWeight:700,marginBottom:16}}>📝 題目設定（支援數學公式：使用 $公式$ 表示行內公式）</div>
           {questions.map((q,qi)=>(
             <div key={qi} className="q-editor">
               <div className="q-editor-header">
@@ -934,17 +1085,20 @@ function CreateQuiz({ user }) {
                   {questions.length>1 && <span style={{fontSize:12,color:'var(--danger)',cursor:'pointer'}} onClick={()=>removeQ(qi)}>✕ 刪除</span>}
                 </div>
               </div>
-              <input className="form-input" placeholder="輸入題目..." value={q.text}
-                onChange={e=>updateQ(qi,'text',e.target.value)} style={{marginBottom:10}}/>
+              <input className="form-input" placeholder="輸入題目（可用 $\frac{3}{8}$ 表示分數）" value={q.text}
+                onChange={e=>updateQ(qi,'text',e.target.value)} style={{marginBottom:6}}/>
+              {q.text && <div style={{fontSize:12,color:'var(--ink2)',marginBottom:10,padding:'4px 8px',background:'#f9f8f6',borderRadius:6}}>
+                預覽：<MathText text={q.text}/>
+              </div>}
               <div className="options-grid">
-                {['A','B','C','D'].map((lbl,oi)=>(
+                {ABCD.map((lbl,oi)=>(
                   <div key={oi} className="option-row">
                     <span className="opt-label">{lbl}.</span>
                     <input className="form-input" style={{fontSize:13,padding:'7px 10px'}} placeholder={`選項 ${lbl}`}
                       value={q.options[oi]} onChange={e=>updateOpt(qi,oi,e.target.value)}/>
                     <input type="radio" style={{accentColor:'var(--accent)',width:16,height:16,cursor:'pointer'}}
                       name={`c_${qi}`} checked={q.correct===oi} onChange={()=>updateQ(qi,'correct',oi)} id={`r_${qi}_${oi}`}/>
-                    <label style={{fontSize:11,color:'var(--ink2)',cursor:'pointer'}} htmlFor={`r_${qi}_${oi}`}>正確</label>
+                    <label style={{fontSize:11,color:'var(--ink2)',cursor:'pointer'}} htmlFor={`r_${qi}_${oi}`}>✓正確</label>
                   </div>
                 ))}
               </div>
@@ -953,19 +1107,20 @@ function CreateQuiz({ user }) {
                 <button className="hint-toggle" style={{borderColor:'#b7e4c7',color:'var(--accent)'}} onClick={()=>toggleField(qi,'showExpl')}>{q.showExpl?'▼':'▶'} 📖 解析</button>
               </div>
               {q.showHint && <div className="hint-area" style={{marginTop:10}}>
-                <div className="hint-area-title">💡 提示內容（學生作答中可主動查看）</div>
+                <div className="hint-area-title">💡 提示（學生作答中可主動查看）</div>
                 <textarea className="form-input" style={{resize:'vertical',minHeight:56,fontSize:13}}
-                  placeholder="例：想想含有葉綠素的細胞器是哪一個？" value={q.hint} onChange={e=>updateQ(qi,'hint',e.target.value)}/>
+                  placeholder="例：分母是全部份數，分子是已吃的份數" value={q.hint} onChange={e=>updateQ(qi,'hint',e.target.value)}/>
               </div>}
               {q.showExpl && <div className="expl-area" style={{marginTop:8}}>
-                <div className="expl-area-title">📖 解析內容（提交後才顯示給學生）</div>
+                <div className="expl-area-title">📖 解析（提交後才顯示）</div>
                 <textarea className="form-input" style={{resize:'vertical',minHeight:72,fontSize:13}}
-                  placeholder="例：葉綠體含有葉綠素，是光合作用的場所..." value={q.explanation} onChange={e=>updateQ(qi,'explanation',e.target.value)}/>
+                  placeholder="例：全部8份（分母），吃了3份（分子），所以是3/8" value={q.explanation} onChange={e=>updateQ(qi,'explanation',e.target.value)}/>
               </div>}
             </div>
           ))}
           <button className="btn btn-secondary btn-sm" onClick={addQ}>＋ 新增題目</button>
         </div>
+
         <div style={{marginTop:24,display:'flex',justifyContent:'flex-end',gap:10}}>
           <button className="btn btn-secondary" onClick={()=>navigate('/')}>取消</button>
           <button className="btn btn-primary" onClick={handleSave} disabled={saving}>{saving?'儲存中...':'建立測驗並產生連結 →'}</button>
@@ -987,20 +1142,37 @@ function Results({ quizId }) {
     async function load() {
       const qSnap = await getDoc(doc(db,'quizzes',quizId))
       if (!qSnap.exists()) { setLoading(false); return }
-      setQuiz({ id:qSnap.id, ...qSnap.data() })
+      setQuiz({id:qSnap.id,...qSnap.data()})
       const rSnap = await getDocs(query(collection(db,'responses'),where('quizId','==',quizId)))
-      setResponses(rSnap.docs.map(d=>({id:d.id,...d.data()})).sort((a,b)=>(b.submittedAt?.seconds||0)-(a.submittedAt?.seconds||0)))
+      setResponses(rSnap.docs.map(d=>({id:d.id,...d.data()})).sort((a,b)=>(a.submittedAt?.seconds||0)-(b.submittedAt?.seconds||0)))
       setLoading(false)
     }
     load()
   }, [quizId])
 
+  const studentGroups = useMemo(() => {
+    if (!quiz) return []
+    const groups = {}
+    responses.forEach(r => {
+      const key = `${r.class}-${padSeat(r.seat)}`
+      if (!groups[key]) groups[key] = { class:r.class, seat:padSeat(r.seat), name:r.name, attempts:[] }
+      groups[key].attempts.push(r)
+    })
+    return Object.values(groups)
+      .sort((a,b)=>a.class.localeCompare(b.class)||a.seat.localeCompare(b.seat))
+      .map(g => {
+        const scores = g.attempts.map(a=>a.score)
+        return { ...g, firstScore:scores[0]??'-', bestScore:Math.max(...scores), latestScore:scores[scores.length-1]??'-', count:g.attempts.length }
+      })
+  }, [responses, quiz])
+
   if (loading) return <div className="loading"><div className="spinner"/>載入中...</div>
   if (!quiz) return <div className="empty-state"><div>找不到這份測驗</div></div>
 
-  const classes = ['all',...new Set(responses.map(r=>r.class).filter(Boolean))]
-  const filtered = filter==='all' ? responses : responses.filter(r=>r.class===filter)
-  const avg = filtered.length ? Math.round(filtered.reduce((s,r)=>s+r.score,0)/filtered.length) : 0
+  const allowMulti = quiz.settings?.allowMultipleAttempts !== false
+  const classes = ['all',...new Set(studentGroups.map(g=>g.class).filter(Boolean))]
+  const filtered = filter==='all' ? studentGroups : studentGroups.filter(g=>g.class===filter)
+  const avgBest = filtered.length ? Math.round(filtered.reduce((s,g)=>s+(allowMulti?g.bestScore:g.firstScore),0)/filtered.length) : 0
 
   return (
     <div>
@@ -1008,18 +1180,16 @@ function Results({ quizId }) {
         <div>
           <div style={{fontSize:13,color:'var(--ink2)',cursor:'pointer',marginBottom:6}} onClick={()=>navigate('/')}>← 返回</div>
           <div className="page-title">{quiz.title}</div>
-          <div className="page-sub">成績查詢</div>
+          <div className="page-sub">成績查詢 {allowMulti?'（可重複作答）':'（限答一次）'}</div>
         </div>
-        <button className="btn btn-excel" onClick={()=>exportToExcel(quiz, responses)}>
-          📥 匯出 Excel
-        </button>
+        <button className="btn btn-excel" onClick={()=>exportToExcel(quiz,responses)}>📥 匯出 Excel</button>
       </div>
       <div className="stats-row">
         {[
-          {label:'作答人數',value:responses.length,sub:'位學生'},
-          {label:'平均分數',value:avg,sub:'分',color:'var(--accent)'},
-          {label:'最高分',value:responses.length?Math.max(...responses.map(r=>r.score)):'-',sub:'分'},
-          {label:'及格率',value:responses.length?Math.round(responses.filter(r=>r.score>=60).length/responses.length*100)+'%':'-',sub:'≥60分'},
+          {label:'學生人數',value:studentGroups.length,sub:'位'},
+          {label:allowMulti?'平均最高分':'平均分數',value:avgBest,sub:'分',color:'var(--accent)'},
+          {label:'最高分',value:studentGroups.length?Math.max(...studentGroups.map(g=>g.bestScore)):'-',sub:'分'},
+          {label:'及格率',value:studentGroups.length?Math.round(studentGroups.filter(g=>g.bestScore>=60).length/studentGroups.length*100)+'%':'-',sub:'≥60分'},
         ].map(s=>(
           <div key={s.label} className="stat-box">
             <div className="stat-label">{s.label}</div>
@@ -1029,7 +1199,7 @@ function Results({ quizId }) {
         ))}
       </div>
       <div className="card">
-        <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:16}}>
+        <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:16,flexWrap:'wrap'}}>
           <span style={{fontSize:13,fontWeight:600}}>篩選班級：</span>
           {classes.map(c=>(
             <button key={c} className={`btn btn-sm ${filter===c?'btn-primary':'btn-secondary'}`} onClick={()=>setFilter(c)}>
@@ -1037,33 +1207,40 @@ function Results({ quizId }) {
             </button>
           ))}
         </div>
-        {filtered.length===0 ? (
-          <div className="empty-state" style={{padding:40}}><div className="empty-icon">📭</div><div>目前沒有作答紀錄</div></div>
-        ) : (
-          <div style={{overflowX:'auto'}}>
-            <table>
-              <thead><tr><th>班級</th><th>座號</th><th>姓名</th><th>分數</th><th>答題狀況</th><th>作答時間</th></tr></thead>
-              <tbody>
-                {filtered.map(r=>(
-                  <tr key={r.id}>
-                    <td><span className="tag tag-class">{r.class}班</span></td>
-                    <td style={{fontFamily:"'DM Mono',monospace"}}>{r.seat}</td>
-                    <td style={{fontWeight:500}}>{r.name}</td>
-                    <td><span className={`score-badge ${scoreBadgeClass(r.score)}`}>{r.score}分</span></td>
-                    <td><div className="answer-dots">
-                      {quiz.questions.map((q,i)=>(
-                        <div key={i} className={`dot ${r.answers?.[i]===q.correct?'dot-correct':'dot-wrong'}`} title={`第${i+1}題`}>
-                          {r.answers?.[i]===q.correct?'✓':'✗'}
+        {filtered.length===0 ? <div className="empty-state" style={{padding:40}}><div className="empty-icon">📭</div><div>目前沒有作答紀錄</div></div>
+        : <div style={{overflowX:'auto'}}>
+          <table>
+            <thead><tr>
+              <th>班級</th><th>座號</th><th>姓名</th>
+              {allowMulti ? <><th>第一次</th><th style={{color:'var(--accent)'}}>最高分</th><th>作答次數</th></> : <th>成績</th>}
+              <th>答題狀況</th>
+            </tr></thead>
+            <tbody>
+              {filtered.map((g,i)=>(
+                <tr key={i}>
+                  <td><span className="tag tag-class">{g.class}班</span></td>
+                  <td style={{fontFamily:"'DM Mono',monospace"}}>{g.seat}</td>
+                  <td style={{fontWeight:500}}>{g.name}</td>
+                  {allowMulti ? <>
+                    <td><span className={`score-badge ${scoreClass(g.firstScore)}`}>{g.firstScore}分</span></td>
+                    <td><span className={`score-badge ${scoreClass(g.bestScore)}`} style={{fontWeight:700}}>{g.bestScore}分</span></td>
+                    <td style={{color:'var(--ink2)',fontSize:13}}>{g.count}次</td>
+                  </> : <td><span className={`score-badge ${scoreClass(g.firstScore)}`}>{g.firstScore}分</span></td>}
+                  <td>
+                    <div className="answer-dots">
+                      {quiz.questions.map((q,qi)=>{
+                        const lastAns = g.attempts[g.attempts.length-1]?.answers?.[qi]
+                        return <div key={qi} className={`dot ${lastAns===q.correct?'dot-correct':'dot-wrong'}`} title={`第${qi+1}題`}>
+                          {lastAns===q.correct?'✓':'✗'}
                         </div>
-                      ))}
-                    </div></td>
-                    <td style={{color:'var(--ink2)',fontSize:13}}>{formatTime(r.submittedAt)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
+                      })}
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>}
       </div>
     </div>
   )
@@ -1074,12 +1251,14 @@ function Analytics({ quizId }) {
   const [quiz, setQuiz] = useState(null)
   const [responses, setResponses] = useState([])
   const [loading, setLoading] = useState(true)
+  const [tab, setTab] = useState('chart')
+  const [shownStudents, setShownStudents] = useState({})
 
   useEffect(() => {
     async function load() {
       const qSnap = await getDoc(doc(db,'quizzes',quizId))
       if (!qSnap.exists()) { setLoading(false); return }
-      setQuiz({ id:qSnap.id, ...qSnap.data() })
+      setQuiz({id:qSnap.id,...qSnap.data()})
       const rSnap = await getDocs(query(collection(db,'responses'),where('quizId','==',quizId)))
       setResponses(rSnap.docs.map(d=>({id:d.id,...d.data()})))
       setLoading(false)
@@ -1087,16 +1266,35 @@ function Analytics({ quizId }) {
     load()
   }, [quizId])
 
+  const n = responses.length
+  const stats = useMemo(() => {
+    if (!quiz) return []
+    return quiz.questions.map((q,qi) => {
+      const correct = responses.filter(r=>r.answers?.[qi]===q.correct).length
+      const rate = n ? Math.round(correct/n*100) : 0
+      const errRate = 100 - rate
+      const optCounts = [0,1,2,3].map(oi=>responses.filter(r=>r.answers?.[qi]===oi).length)
+      const wrongStudents = responses.filter(r=>r.answers?.[qi]!==q.correct)
+        .map(r=>({seat:padSeat(r.seat),class:r.class,name:r.name}))
+        .sort((a,b)=>a.class.localeCompare(b.class)||a.seat.localeCompare(b.seat))
+      return { q, rate, errRate, correct, optCounts, wrongStudents, colorClass:errorColor(errRate) }
+    })
+  }, [quiz, responses])
+
+  const colorLabel = (cls) => ({err:'red':'🔴',err:'orange':'🟠',err:'yellow':'🟡',err:'green':'🟢'}[cls]||'')
+
   if (loading) return <div className="loading"><div className="spinner"/>載入中...</div>
   if (!quiz) return <div className="empty-state"><div>找不到這份測驗</div></div>
 
-  const n = responses.length
-  const stats = quiz.questions.map((q,qi) => {
-    const correct = responses.filter(r=>r.answers?.[qi]===q.correct).length
-    const rate = n ? Math.round(correct/n*100) : 0
-    const optCounts = [0,1,2,3].map(oi=>responses.filter(r=>r.answers?.[qi]===oi).length)
-    return { q, rate, correct, optCounts }
-  })
+  const errRateClass = (cls) => {
+    if (cls==='err-red') return 'err-rate-red'
+    if (cls==='err-orange') return 'err-rate-orange'
+    if (cls==='err-yellow') return 'err-rate-yellow'
+    return 'err-rate-green'
+  }
+  const errEmoji = (cls) => ({
+    'err-red':'🔴','err-orange':'🟠','err-yellow':'🟡','err-green':'🟢'
+  }[cls]||'')
 
   return (
     <div>
@@ -1104,67 +1302,126 @@ function Analytics({ quizId }) {
         <div>
           <div style={{fontSize:13,color:'var(--ink2)',cursor:'pointer',marginBottom:6}} onClick={()=>navigate('/')}>← 返回</div>
           <div className="page-title">{quiz.title}</div>
-          <div className="page-sub">答題分析 — {n} 人作答</div>
+          <div className="page-sub">答題分析 — {n} 人次作答</div>
         </div>
-        <button className="btn btn-excel" onClick={()=>exportToExcel(quiz, responses)}>📥 匯出 Excel</button>
+        <button className="btn btn-excel" onClick={()=>{
+          getDocs(query(collection(db,'responses'),where('quizId','==',quizId))).then(s=>{
+            exportToExcel(quiz, s.docs.map(d=>({id:d.id,...d.data()})))
+          })
+        }}>📥 匯出 Excel</button>
       </div>
-      <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:16,marginBottom:24}}>
-        <div className="card">
-          <div style={{fontSize:14,fontWeight:700,marginBottom:14}}>各題答對率</div>
-          <div className="q-analytics">
-            {stats.map((s,i)=>(
-              <div key={i} className="q-row">
-                <div className="q-head">
-                  <div className="q-text-sm">第{i+1}題：{s.q.text.length>20?s.q.text.slice(0,20)+'...':s.q.text}</div>
-                  <div className={`q-rate ${s.rate>=70?'good':'bad'}`}>{s.rate}%</div>
+
+      <div style={{display:'flex',gap:12,marginBottom:20,flexWrap:'wrap'}}>
+        {[{label:'🔴 高錯誤（80%+）',count:stats.filter(s=>s.colorClass==='err-red').length,color:'var(--danger)'},
+          {label:'🟠 中錯誤（50%+）',count:stats.filter(s=>s.colorClass==='err-orange').length,color:'var(--warn)'},
+          {label:'🟡 低錯誤（30%+）',count:stats.filter(s=>s.colorClass==='err-yellow').length,color:'#e9c32a'},
+          {label:'🟢 良好（<30%）',count:stats.filter(s=>s.colorClass==='err-green').length,color:'var(--accent2)'},
+        ].map(s=>(
+          <div key={s.label} style={{background:'white',borderRadius:8,padding:'8px 14px',border:'1px solid var(--border)',fontSize:13}}>
+            {s.label}: <strong style={{color:s.color}}>{s.count}</strong> 題
+          </div>
+        ))}
+      </div>
+
+      <div className="tabs">
+        <div className={`tab ${tab==='chart'?'active':''}`} onClick={()=>setTab('chart')}>📊 答題統計</div>
+        <div className={`tab ${tab==='review'?'active':''}`} onClick={()=>setTab('review')}>🔍 錯題檢討</div>
+      </div>
+
+      {tab==='chart' && (
+        <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:16,marginBottom:24}}>
+          <div className="card">
+            <div style={{fontSize:14,fontWeight:700,marginBottom:14}}>各題答對率</div>
+            <div className="q-analytics">
+              {stats.map((s,i)=>(
+                <div key={i} className={`q-row ${s.colorClass}`}>
+                  <div className="q-head">
+                    <div className="q-text-sm">{errEmoji(s.colorClass)} 第{i+1}題：<MathText text={s.q.text.length>18?s.q.text.slice(0,18)+'...':s.q.text}/></div>
+                    <div className={`err-rate ${errRateClass(s.colorClass)}`}>{s.rate}%</div>
+                  </div>
+                  <div className="q-bar-bg">
+                    <div className={`q-bar ${s.rate>=70?'bar-green':'bar-red'}`} style={{width:`${s.rate}%`}}/>
+                  </div>
                 </div>
-                <div className="q-bar-bg"><div className={`q-bar ${s.rate>=70?'bar-green':'bar-red'}`} style={{width:`${s.rate}%`}}/></div>
-              </div>
-            ))}
+              ))}
+            </div>
+          </div>
+          <div className="card">
+            <div style={{fontSize:14,fontWeight:700,marginBottom:14}}>選項分佈</div>
+            <div className="q-analytics">
+              {stats.map((s,i)=>(
+                <div key={i} className={`q-row ${s.colorClass}`}>
+                  <div className="q-head" style={{marginBottom:8}}>
+                    <div className="q-text-sm">第{i+1}題 {errEmoji(s.colorClass)}</div>
+                    <div style={{fontSize:12,color:'var(--ink2)'}}>{s.correct}/{n} 答對</div>
+                  </div>
+                  <div className="q-opts-row">
+                    {s.q.options.map((opt,oi)=>(
+                      <div key={oi} className={`q-opt-chip ${oi===s.q.correct?'correct':''}`}>
+                        {ABCD[oi]}.<MathText text={opt.slice(0,5)}/> ({s.optCounts[oi]}人)
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
           </div>
         </div>
-        <div className="card">
-          <div style={{fontSize:14,fontWeight:700,marginBottom:14}}>選項分佈</div>
-          <div className="q-analytics">
-            {stats.map((s,i)=>(
-              <div key={i} className="q-row">
-                <div className="q-head" style={{marginBottom:8}}>
-                  <div className="q-text-sm">第{i+1}題</div>
-                  <div style={{fontSize:12,color:'var(--ink2)'}}>{s.correct}/{n} 答對</div>
-                </div>
-                <div className="q-opts-row">
-                  {s.q.options.map((opt,oi)=>(
-                    <div key={oi} className={`q-opt-chip ${oi===s.q.correct?'correct':''}`}>
-                      {['A','B','C','D'][oi]}. {opt.slice(0,5)}({s.optCounts[oi]}人)
-                    </div>
-                  ))}
-                </div>
-              </div>
-            ))}
+      )}
+
+      {tab==='review' && (
+        <div>
+          <div style={{fontSize:13,color:'var(--ink2)',marginBottom:16,padding:'10px 14px',background:'white',borderRadius:8,border:'1px solid var(--border)'}}>
+            🔴 80%以上答錯 ・ 🟠 50%以上答錯 ・ 🟡 30%以上答錯 ・ 🟢 答對率良好<br/>
+            點擊「顯示答錯學生」可查看各班座號
           </div>
-        </div>
-      </div>
-      <div className="card">
-        <div style={{fontSize:14,fontWeight:700,marginBottom:14}}>⚠️ 最難題目排名</div>
-        <table>
-          <thead><tr><th>排名</th><th>題目</th><th>答對率</th><th>最多人答錯的選項</th></tr></thead>
-          <tbody>
+          <div className="q-analytics">
             {[...stats].sort((a,b)=>a.rate-b.rate).map((s,i)=>{
-              const wrongIdx = s.optCounts.reduce((mi,v,oi)=>oi!==s.q.correct&&v>s.optCounts[mi]?oi:mi, s.q.correct===0?1:0)
+              const qi = quiz.questions.indexOf(s.q)
+              const key = `q_${qi}`
               return (
-                <tr key={i}>
-                  <td style={{fontWeight:700,color:i<2?'var(--danger)':'var(--ink2)'}}>#{i+1}</td>
-                  <td>{s.q.text}</td>
-                  <td><span className={`score-badge ${scoreBadgeClass(s.rate)}`}>{s.rate}%</span></td>
-                  <td style={{color:'var(--danger)',fontSize:13}}>
-                    {wrongIdx!==s.q.correct?`${['A','B','C','D'][wrongIdx]}. ${s.q.options[wrongIdx]}（${s.optCounts[wrongIdx]}人）`:'-'}
-                  </td>
-                </tr>
+                <div key={i} className={`q-row ${s.colorClass}`}>
+                  <div className="q-head">
+                    <div style={{flex:1}}>
+                      <div style={{fontSize:12,color:'var(--ink2)',marginBottom:4}}>
+                        {errEmoji(s.colorClass)} 第{qi+1}題 · {s.q.points}分
+                        <span className={`err-rate ${errRateClass(s.colorClass)}`} style={{marginLeft:8}}>答錯率 {s.errRate}%</span>
+                      </div>
+                      <div style={{fontSize:14,fontWeight:600,lineHeight:1.6}}>
+                        <MathText text={s.q.text}/>
+                      </div>
+                    </div>
+                  </div>
+                  <div className="q-opts-row" style={{marginBottom:8}}>
+                    {s.q.options.map((opt,oi)=>(
+                      <div key={oi} className={`q-opt-chip ${oi===s.q.correct?'correct':''}`} style={{padding:'4px 10px',fontSize:12}}>
+                        {ABCD[oi]}. <MathText text={opt}/> ({s.optCounts[oi]}人)
+                        {oi===s.q.correct && ' ✓'}
+                      </div>
+                    ))}
+                  </div>
+                  {s.q.explanation && (
+                    <div style={{background:'white',borderRadius:6,padding:'8px 12px',fontSize:13,color:'var(--ink2)',marginBottom:8,border:'1px solid rgba(0,0,0,.08)'}}>
+                      📖 <MathText text={s.q.explanation}/>
+                    </div>
+                  )}
+                  <button className="btn btn-secondary btn-sm" onClick={()=>setShownStudents(prev=>({...prev,[key]:!prev[key]}))}>
+                    {shownStudents[key]?'▼ 隱藏':'▶ 顯示答錯學生'} ({s.wrongStudents.length}人)
+                  </button>
+                  {shownStudents[key] && (
+                    <div className="wrong-seats">
+                      {s.wrongStudents.length===0 ? <span style={{fontSize:13,color:'var(--accent)'}}>全班答對！🎉</span>
+                      : s.wrongStudents.map((w,wi)=>(
+                        <span key={wi} className="wrong-seat-badge" title={w.name}>{w.class}-{w.seat}</span>
+                      ))}
+                    </div>
+                  )}
+                </div>
               )
             })}
-          </tbody>
-        </table>
-      </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
@@ -1174,40 +1431,98 @@ function StudentQuiz({ quizId }) {
   const [step, setStep] = useState('info')
   const [info, setInfo] = useState({ name:'', class:'', seat:'' })
   const [quiz, setQuiz] = useState(null)
+  const [roster, setRoster] = useState(null)
   const [loading, setLoading] = useState(true)
   const [answers, setAnswers] = useState({})
   const [shownHints, setShownHints] = useState({})
   const [score, setScore] = useState(0)
   const [saving, setSaving] = useState(false)
+  const [sessionScores, setSessionScores] = useState([])
+  const [alreadyAttempted, setAlreadyAttempted] = useState(false)
+  const [checkingAttempt, setCheckingAttempt] = useState(false)
 
   useEffect(() => {
     async function load() {
       try {
         const snap = await getDoc(doc(db,'quizzes',quizId))
-        if (snap.exists()) setQuiz({ id:snap.id, ...snap.data() })
-      } catch(e) { console.error(e) }
+        if (snap.exists()) {
+          const q = {id:snap.id,...snap.data()}
+          setQuiz(q)
+          if (q.settings?.useRoster && q.teacherId) {
+            const rSnap = await getDoc(doc(db,'rosters',q.teacherId))
+            if (rSnap.exists()) setRoster(rSnap.data().classes||{})
+          }
+        }
+      } catch(e){console.error(e)}
       setLoading(false)
     }
     load()
   }, [quizId])
 
-  const toggleHint = i => setShownHints(h=>({...h,[i]:!h[i]}))
-  const totalPoints = quiz?.questions?.reduce((s,q)=>s+q.points,0)||0
-  const allAnswered = quiz?.questions?.every((_,i)=>answers[i]!==undefined)
+  // Auto-fill name from roster when seat changes
+  useEffect(() => {
+    if (roster && info.class && info.seat && quiz?.settings?.useRoster) {
+      const student = roster[info.class]?.find(s=>s.seat===info.seat)
+      if (student) setInfo(prev=>({...prev,name:student.name}))
+    }
+  }, [info.class, info.seat, roster])
+
+  const s = quiz?.settings || {}
+  const totalPoints = quiz?.questions?.reduce((sum,q)=>sum+q.points,0) || 0
+
+  const availableClasses = useMemo(() => {
+    if (!quiz) return []
+    if (s.allowedClasses?.length) return s.allowedClasses
+    if (s.useRoster && roster) return Object.keys(roster).sort()
+    return []
+  }, [quiz, roster])
+
+  const availableSeats = useMemo(() => {
+    if (s.useRoster && roster && info.class && roster[info.class]) {
+      return roster[info.class].map(st=>st.seat)
+    }
+    return Array.from({length:50},(_,i)=>padSeat(i+1))
+  }, [s.useRoster, roster, info.class])
+
+  const useDropdowns = availableClasses.length > 0
+
+  const handleInfoSubmit = async () => {
+    const seatPadded = padSeat(info.seat)
+    const finalInfo = {...info, seat:seatPadded}
+    setInfo(finalInfo)
+    if (s.allowMultipleAttempts===false) {
+      setCheckingAttempt(true)
+      try {
+        const snap = await getDocs(query(collection(db,'responses'),
+          where('quizId','==',quizId), where('class','==',finalInfo.class), where('seat','==',seatPadded)))
+        if (snap.size > 0) { setAlreadyAttempted(true); setCheckingAttempt(false); return }
+      } catch(e){console.error(e)}
+      setCheckingAttempt(false)
+    }
+    setStep('quiz')
+  }
 
   const handleSubmit = async () => {
     setSaving(true)
-    let s=0; quiz.questions.forEach((q,i)=>{ if(answers[i]===q.correct) s+=q.points })
-    setScore(s)
+    let sc=0; quiz.questions.forEach((q,i)=>{if(answers[i]===q.correct) sc+=q.points})
+    setScore(sc); setSessionScores(prev=>[...prev,sc])
     try {
+      const existing = await getDocs(query(collection(db,'responses'),
+        where('quizId','==',quizId), where('class','==',info.class), where('seat','==',info.seat)))
       await addDoc(collection(db,'responses'),{
         quizId, name:info.name, class:info.class, seat:info.seat,
-        score:s, answers:quiz.questions.map((_,i)=>answers[i]??-1),
-        submittedAt: serverTimestamp(),
+        score:sc, answers:quiz.questions.map((_,i)=>answers[i]??-1),
+        submittedAt:serverTimestamp(), attemptNumber:existing.size+1,
       })
-    } catch(e) { console.error('儲存失敗',e) }
+    } catch(e){console.error('儲存失敗',e)}
     setSaving(false); setStep('result')
   }
+
+  const handleRetry = () => {
+    if (s.allowMultipleAttempts===false) { alert('此測驗只能作答一次'); return }
+    setAnswers({}); setShownHints({}); setStep('quiz')
+  }
+  const handleGoHome = () => { setAnswers({}); setShownHints({}); setInfo({name:'',class:'',seat:''}); setSessionScores([]); setStep('info') }
 
   if (loading) return (
     <div className="student-page">
@@ -1222,25 +1537,56 @@ function StudentQuiz({ quizId }) {
     </div>
   )
 
-  const s = quiz.settings||{}
+  // Already attempted (single attempt mode)
+  if (alreadyAttempted) return (
+    <div className="student-page">
+      <div className="student-topbar"><div className="student-topbar-title">{quiz.title}</div></div>
+      <div className="student-body" style={{textAlign:'center',paddingTop:60}}>
+        <div style={{fontSize:48,marginBottom:16}}>🔒</div>
+        <div style={{fontSize:20,fontWeight:700,marginBottom:8}}>你已經作答過了</div>
+        <div style={{fontSize:14,color:'var(--ink2)'}}>此測驗只能作答一次</div>
+      </div>
+    </div>
+  )
 
+  // Result page
   if (step==='result') {
     const correctCount = quiz.questions.filter((_,i)=>answers[i]===quiz.questions[i].correct).length
+    const bestScore = sessionScores.length ? Math.max(...sessionScores) : score
     return (
       <div className="student-page">
-        <div className="student-topbar"><div><div className="student-topbar-title">📋 {quiz.title}</div></div></div>
+        <div className="student-topbar">
+          <div><div className="student-topbar-title">{quiz.title}</div></div>
+        </div>
         <div className="student-body">
           <div className="result-card">
             <div style={{fontSize:16,fontWeight:700}}>✅ 作答完成！</div>
-            <div style={{fontSize:14,color:'var(--ink2)',marginTop:6}}>{info.name} 同學，你的成績如下</div>
+            <div style={{fontSize:14,color:'var(--ink2)',marginTop:6}}>{info.name} 同學</div>
             <div className="result-score">{score}</div>
             <div className="result-label">滿分 {totalPoints} 分</div>
+            {sessionScores.length>1 && (
+              <div style={{marginTop:12,fontSize:13,color:'var(--ink2)'}}>
+                本次最高分：<strong style={{color:'var(--accent)'}}>{bestScore}分</strong>
+                &nbsp;·&nbsp;已作答 {sessionScores.length} 次
+              </div>
+            )}
             <div className="result-breakdown">
               <div className="rb-item"><div className="rb-val" style={{color:'var(--accent)'}}>{correctCount}</div><div className="rb-lab">答對</div></div>
               <div className="rb-item"><div className="rb-val" style={{color:'var(--danger)'}}>{quiz.questions.length-correctCount}</div><div className="rb-lab">答錯</div></div>
               <div className="rb-item"><div className="rb-val">{totalPoints?Math.round(score/totalPoints*100):0}%</div><div className="rb-lab">正確率</div></div>
             </div>
+            <div className="result-btns">
+              <button onClick={handleRetry}
+                style={{flex:1,background:s.allowMultipleAttempts===false?'#ccc':'var(--accent)',color:'white',padding:'12px',borderRadius:8,border:'none',fontSize:14,fontWeight:700,cursor:s.allowMultipleAttempts===false?'not-allowed':'pointer',fontFamily:"'Noto Sans TC',sans-serif"}}>
+                🔄 重新作答
+              </button>
+              <button onClick={handleGoHome}
+                style={{flex:1,background:'white',color:'var(--ink)',padding:'12px',borderRadius:8,border:'1.5px solid var(--border)',fontSize:14,fontWeight:600,cursor:'pointer',fontFamily:"'Noto Sans TC',sans-serif"}}>
+                🏠 回到首頁
+              </button>
+            </div>
           </div>
+
           {(s.showCorrect!==false||s.showExplAfter!==false) && (
             <div>
               <div style={{fontSize:16,fontWeight:700,marginBottom:16}}>📋 詳細解析</div>
@@ -1252,7 +1598,7 @@ function StudentQuiz({ quizId }) {
                       <span>第 {qi+1} 題 · {q.points}分</span>
                       <span className={`result-badge ${isCorrect?'correct':'wrong'}`}>{isCorrect?'✓ 答對':'✗ 答錯'}</span>
                     </div>
-                    <div className="sq-text">{q.text}</div>
+                    <div className="sq-text"><MathText text={q.text}/></div>
                     <div className="sq-opts" style={{pointerEvents:'none'}}>
                       {q.options.map((opt,oi)=>{
                         let cls='revealed'
@@ -1260,8 +1606,8 @@ function StudentQuiz({ quizId }) {
                         else if(oi===answers[qi]) cls+=' wrong-reveal'
                         return (
                           <div key={oi} className={`sq-opt ${cls}`}>
-                            <div className="opt-circle">{['A','B','C','D'][oi]}</div>
-                            <div className="opt-text">{opt}
+                            <div className="opt-circle">{ABCD[oi]}</div>
+                            <div className="opt-text"><MathText text={opt}/>
                               {s.showCorrect!==false&&oi===q.correct&&<span style={{fontSize:11,color:'var(--accent)',marginLeft:8,fontWeight:700}}>← 正確答案</span>}
                               {oi===answers[qi]&&oi!==q.correct&&<span style={{fontSize:11,color:'var(--danger)',marginLeft:8}}>← 你的選擇</span>}
                             </div>
@@ -1271,8 +1617,8 @@ function StudentQuiz({ quizId }) {
                     </div>
                     {s.showExplAfter!==false&&q.explanation&&(
                       isCorrect
-                        ? <div className="expl-bubble"><div className="expl-bubble-title">📖 解析</div><div className="expl-bubble-text">{q.explanation}</div></div>
-                        : <div className="wrong-expl-bubble"><div className="wrong-expl-title">📖 看看哪裡答錯了</div><div className="wrong-expl-text">{q.explanation}</div></div>
+                        ? <div className="expl-bubble"><div className="expl-bubble-title">📖 解析</div><div className="expl-bubble-text"><MathText text={q.explanation}/></div></div>
+                        : <div className="wrong-expl-bubble"><div className="wrong-expl-title">📖 看看哪裡答錯了</div><div className="wrong-expl-text"><MathText text={q.explanation}/></div></div>
                     )}
                   </div>
                 )
@@ -1297,52 +1643,79 @@ function StudentQuiz({ quizId }) {
           <div className="info-card">
             <div style={{fontSize:16,fontWeight:700,marginBottom:16}}>請先填寫基本資料</div>
             <div className="info-grid">
-              {[['班級','例：701','class'],['座號','例：01','seat'],['姓名','你的名字','name']].map(([label,ph,field])=>(
-                <div key={field}>
-                  <label className="form-label" style={{fontSize:12}}>{label}</label>
-                  <input className="form-input" placeholder={ph} value={info[field]} onChange={e=>setInfo({...info,[field]:e.target.value})}/>
-                </div>
-              ))}
+              {/* Class */}
+              <div>
+                <label className="form-label" style={{fontSize:12}}>班級</label>
+                {useDropdowns ? (
+                  <select className="form-select" value={info.class} onChange={e=>setInfo({...info,class:e.target.value,seat:'',name:''})}>
+                    <option value="">請選擇班級</option>
+                    {availableClasses.map(c=><option key={c} value={c}>{c}班</option>)}
+                  </select>
+                ) : (
+                  <input className="form-input" placeholder="例：103" value={info.class} onChange={e=>setInfo({...info,class:e.target.value})}/>
+                )}
+              </div>
+              {/* Seat */}
+              <div>
+                <label className="form-label" style={{fontSize:12}}>座號</label>
+                {useDropdowns ? (
+                  <select className="form-select" value={info.seat} onChange={e=>setInfo({...info,seat:e.target.value})} disabled={!info.class}>
+                    <option value="">請選擇座號</option>
+                    {availableSeats.map(s=><option key={s} value={s}>{s}</option>)}
+                  </select>
+                ) : (
+                  <input className="form-input" placeholder="例：01" value={info.seat} onChange={e=>setInfo({...info,seat:e.target.value})}/>
+                )}
+              </div>
+              {/* Name */}
+              <div>
+                <label className="form-label" style={{fontSize:12}}>姓名</label>
+                <input className="form-input" placeholder="你的名字" value={info.name}
+                  onChange={e=>setInfo({...info,name:e.target.value})}
+                  readOnly={s.useRoster && !s.allowNameEdit && !!info.name}
+                  style={{background: s.useRoster&&!s.allowNameEdit&&info.name?'#f5f3ef':undefined}}/>
+              </div>
             </div>
-            <button onClick={()=>setStep('quiz')} disabled={!info.name||!info.class||!info.seat}
-              style={{width:'100%',background:(!info.name||!info.class||!info.seat)?'#ccc':'var(--accent)',color:'white',
-                padding:'13px 20px',borderRadius:8,border:'none',fontSize:15,fontWeight:700,
-                cursor:(!info.name||!info.class||!info.seat)?'not-allowed':'pointer',fontFamily:"'Noto Sans TC',sans-serif"}}>
-              開始作答 →
+            <button onClick={handleInfoSubmit} disabled={!info.name||!info.class||!info.seat||checkingAttempt}
+              style={{width:'100%',background:(!info.name||!info.class||!info.seat)?'#ccc':'var(--accent)',color:'white',padding:'13px 20px',borderRadius:8,border:'none',fontSize:15,fontWeight:700,cursor:(!info.name||!info.class||!info.seat)?'not-allowed':'pointer',fontFamily:"'Noto Sans TC',sans-serif"}}>
+              {checkingAttempt?'確認中...':'開始作答 →'}
             </button>
           </div>
         )}
+
         {step==='quiz' && (
           <>
             <div className="progress-bar-wrap">
               <span style={{fontSize:13,color:'var(--ink2)',flexShrink:0}}>已作答 {Object.keys(answers).length}/{quiz.questions.length}</span>
-              <div className="progress-track"><div className="progress-fill" style={{width:`${Object.keys(answers).length/quiz.questions.length*100}%`}}/></div>
+              <div className="progress-track">
+                <div className="progress-fill" style={{width:`${Object.keys(answers).length/quiz.questions.length*100}%`}}/>
+              </div>
             </div>
             {quiz.questions.map((q,qi)=>(
               <div key={qi} className="sq-card">
                 <div className="sq-num">
                   <span>第 {qi+1} 題 · {q.points}分</span>
                   {s.allowHint!==false&&q.hint&&(
-                    <button className="hint-btn" onClick={()=>toggleHint(qi)}>💡 {shownHints[qi]?'收起提示':'查看提示'}</button>
+                    <button className="hint-btn" onClick={()=>setShownHints(h=>({...h,[qi]:!h[qi]}))}>
+                      💡 {shownHints[qi]?'收起提示':'查看提示'}
+                    </button>
                   )}
                 </div>
-                <div className="sq-text">{q.text}</div>
-                {q.hint&&shownHints[qi]&&<div className="hint-bubble"><div className="hint-bubble-title">💡 提示</div>{q.hint}</div>}
+                <div className="sq-text"><MathText text={q.text}/></div>
+                {q.hint&&shownHints[qi]&&<div className="hint-bubble"><div className="hint-bubble-title">💡 提示</div><MathText text={q.hint}/></div>}
                 <div className="sq-opts" style={{marginTop:q.hint&&shownHints[qi]?12:0}}>
                   {q.options.map((opt,oi)=>(
                     <div key={oi} className={`sq-opt ${answers[qi]===oi?'selected':''}`} onClick={()=>setAnswers({...answers,[qi]:oi})}>
-                      <div className="opt-circle">{['A','B','C','D'][oi]}</div>
-                      <div className="opt-text">{opt}</div>
+                      <div className="opt-circle">{ABCD[oi]}</div>
+                      <div className="opt-text"><MathText text={opt}/></div>
                     </div>
                   ))}
                 </div>
               </div>
             ))}
-            <button onClick={handleSubmit} disabled={!allAnswered||saving}
-              style={{width:'100%',background:allAnswered&&!saving?'var(--accent)':'#ccc',color:'white',
-                padding:'15px 20px',borderRadius:10,border:'none',fontSize:16,fontWeight:700,
-                cursor:allAnswered&&!saving?'pointer':'not-allowed',fontFamily:"'Noto Sans TC',sans-serif",marginBottom:32}}>
-              {saving?'儲存中...':allAnswered?'提交答案 →':`還有 ${quiz.questions.length-Object.keys(answers).length} 題未作答`}
+            <button onClick={handleSubmit} disabled={!quiz.questions.every((_,i)=>answers[i]!==undefined)||saving}
+              style={{width:'100%',background:quiz.questions.every((_,i)=>answers[i]!==undefined)&&!saving?'var(--accent)':'#ccc',color:'white',padding:'15px 20px',borderRadius:10,border:'none',fontSize:16,fontWeight:700,cursor:quiz.questions.every((_,i)=>answers[i]!==undefined)&&!saving?'pointer':'not-allowed',fontFamily:"'Noto Sans TC',sans-serif",marginBottom:32}}>
+              {saving?'儲存中...':quiz.questions.every((_,i)=>answers[i]!==undefined)?'提交答案 →':`還有 ${quiz.questions.length-Object.keys(answers).length} 題未作答`}
             </button>
           </>
         )}
@@ -1358,39 +1731,28 @@ export default function App() {
   const [showProfile, setShowProfile] = useState(false)
   const hash = useHash()
 
-  useEffect(() => { return onAuthStateChanged(auth, u => setUser(u||null)) }, [])
-
-  // Load custom display name from Firestore when user logs in
+  useEffect(() => { return onAuthStateChanged(auth, u=>setUser(u||null)) }, [])
   useEffect(() => {
     if (!user) return
-    getDoc(doc(db, 'users', user.uid)).then(snap => {
-      if (snap.exists() && snap.data().displayName) {
-        setDisplayName(snap.data().displayName)
-      }
-    }).catch(() => {})
+    getDoc(doc(db,'users',user.uid)).then(snap => {
+      if (snap.exists()&&snap.data().displayName) setDisplayName(snap.data().displayName)
+    }).catch(()=>{})
   }, [user])
 
-  const isStudentRoute = hash.startsWith('/s/')
-
-  if (isStudentRoute) return (
-    <><style>{css}</style><StudentQuiz quizId={hash.replace('/s/','')}/></>
+  if (hash.startsWith('/s/')) return (
+    <><style>{css}</style><StudentQuiz quizId={hash.replace('/s/','')} /></>
   )
-
-  if (user === undefined) return (
+  if (user===undefined) return (
     <><style>{css}</style><div className="loading" style={{minHeight:'100vh'}}><div className="spinner"/>載入中...</div></>
   )
-
-  if (!user) return (
-    <><style>{css}</style><LoginPage/></>
-  )
-
-  const handleLogout = () => signOut(auth)
+  if (!user) return <><style>{css}</style><LoginPage/></>
 
   let content
   if (hash.startsWith('/results/'))        content = <Results quizId={hash.replace('/results/','')}/>
   else if (hash.startsWith('/analytics/')) content = <Analytics quizId={hash.replace('/analytics/','')}/>
-  else if (hash === '/create')             content = <CreateQuiz user={user}/>
-  else if (hash === '/admin' && isAdmin(user)) content = <AdminPanel/>
+  else if (hash==='/create')               content = <CreateQuiz user={user}/>
+  else if (hash==='/roster')               content = <RosterManager user={user}/>
+  else if (hash==='/admin'&&isAdmin(user)) content = <AdminPanel/>
   else                                     content = <Dashboard user={user}/>
 
   return (
@@ -1398,18 +1760,12 @@ export default function App() {
       <div className="app">
         <div className="layout">
           <Sidebar hash={hash} user={user} displayName={displayName}
-            onLogout={handleLogout} onEditProfile={() => setShowProfile(true)}/>
+            onLogout={()=>signOut(auth)} onEditProfile={()=>setShowProfile(true)}/>
           <div className="main">{content}</div>
         </div>
       </div>
-      {showProfile && (
-        <ProfileModal
-          user={user}
-          displayName={displayName}
-          onSave={(name) => { setDisplayName(name); setShowProfile(false) }}
-          onCancel={() => setShowProfile(false)}
-        />
-      )}
+      {showProfile && <ProfileModal user={user} displayName={displayName}
+        onSave={n=>{setDisplayName(n);setShowProfile(false)}} onCancel={()=>setShowProfile(false)}/>}
     </>
   )
 }
