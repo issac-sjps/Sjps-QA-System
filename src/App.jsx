@@ -13,6 +13,14 @@ const isAdmin = (u) => u && ADMIN_EMAILS.includes(u.email)
 const ABCD = ['A','B','C','D']
 const padSeat = (s) => String(parseInt(String(s).trim()) || 0).padStart(2, '0')
 
+// Quiz status system
+const STATUS = {
+  draft:  { label:'草稿',   emoji:'📝', color:'#6b6560', bg:'#f0ede8', border:'#e2ddd8' },
+  active: { label:'派發中', emoji:'🟢', color:'#2d6a4f', bg:'#e8f5ee', border:'#b7e4c7' },
+  ended:  { label:'已結束', emoji:'🔴', color:'#c1440e', bg:'#ffeee8', border:'#fcd5c5' },
+}
+const getStatus = (quiz) => quiz.status || 'draft'
+
 // ─── Hash Router ──────────────────────────────────────────────────────────────
 function getHash() { return window.location.hash.replace('#','') || '/' }
 function useHash() {
@@ -52,6 +60,15 @@ const fmtDate = (ts) => { if(!ts) return ''; const d=ts.toDate?ts.toDate():new D
 const fmtTime = (ts) => { if(!ts) return ''; const d=ts.toDate?ts.toDate():new Date(ts); return d.toLocaleTimeString('zh-TW',{hour:'2-digit',minute:'2-digit'}) }
 const scoreClass = (s) => s>=80?'score-high':s>=60?'score-mid':'score-low'
 const errorColor = (rate) => rate>=80?'err-red':rate>=50?'err-orange':rate>=30?'err-yellow':'err-green'
+
+// ─── Quiz Status ──────────────────────────────────────────────────────────────
+// status: 'draft' | 'active' | 'ended'
+const STATUS = {
+  draft:  { label:'草稿',   emoji:'📝', color:'#6b6560', bg:'#f0ede8',  border:'#e2ddd8' },
+  active: { label:'派發中', emoji:'🟢', color:'#2d6a4f', bg:'#e8f5ee',  border:'#52b788' },
+  ended:  { label:'已結束', emoji:'🔴', color:'#c1440e', bg:'#ffeee8',  border:'#fcd5c5' },
+}
+function getStatus(q) { return q.status || 'draft' }
 
 function parseQuestionRows(rows) {
   return rows.slice(1).filter(r=>r[0]).map(r => ({
@@ -214,6 +231,19 @@ tr:hover td{background:#f9f8f6}
 .copy-btn{font-size:11px;color:var(--accent);cursor:pointer;font-weight:600;flex-shrink:0}
 .new-quiz-card{background:transparent;border-radius:var(--radius);border:2px dashed var(--border);padding:20px;cursor:pointer;transition:all .2s;display:flex;align-items:center;justify-content:center;gap:8px;color:var(--ink2);font-size:14px;font-weight:500;min-height:140px}
 .new-quiz-card:hover{border-color:var(--accent);color:var(--accent);background:#f0f9f4}
+/* Status badges */
+.status-badge{display:inline-flex;align-items:center;gap:5px;padding:4px 10px;border-radius:20px;font-size:12px;font-weight:700}
+.status-draft{background:#f0ede8;color:#6b6560;border:1px solid #e2ddd8}
+.status-active{background:#e8f5ee;color:#2d6a4f;border:1px solid #b7e4c7}
+.status-ended{background:#ffeee8;color:#c1440e;border:1px solid #fcd5c5}
+.quiz-card-footer{display:flex;gap:6px;flex-wrap:wrap}
+/* Edit modal */
+.edit-modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:300;display:flex;align-items:stretch;justify-content:flex-end}
+.edit-modal-panel{background:white;width:100%;max-width:680px;display:flex;flex-direction:column;overflow:hidden;animation:slideInRight .25s ease}
+@keyframes slideInRight{from{transform:translateX(100%)}to{transform:translateX(0)}}
+.edit-modal-header{padding:20px 24px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;flex-shrink:0}
+.edit-modal-title{font-size:18px;font-weight:700}
+.edit-modal-body{flex:1;overflow-y:auto;padding:24px}
 /* Quiz editor */
 .q-editor{border:1.5px solid var(--border);border-radius:10px;padding:18px;margin-bottom:12px;background:white}
 .q-editor-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px}
@@ -323,7 +353,16 @@ tr:hover td{background:#f9f8f6}
 .t-stat{text-align:center}
 .t-stat-val{font-size:18px;font-weight:700;color:var(--accent)}
 .t-stat-lab{font-size:11px;color:var(--ink2)}
-/* Roster */
+/* Status badges */
+.status-badge{display:inline-flex;align-items:center;gap:5px;padding:3px 10px;border-radius:20px;font-size:12px;font-weight:700;border:1.5px solid transparent}
+.status-draft{background:#f0ede8;color:#6b6560;border-color:#e2ddd8}
+.status-active{background:#e8f5ee;color:#2d6a4f;border-color:#52b788}
+.status-ended{background:#ffeee8;color:#c1440e;border-color:#fcd5c5}
+.status-btn{display:inline-flex;align-items:center;gap:5px;padding:5px 12px;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;border:1.5px solid;font-family:'Noto Sans TC',sans-serif;transition:all .15s}
+.warn-banner{background:#fff8e1;border:1.5px solid #f0d060;border-radius:10px;padding:14px 16px;margin-bottom:20px;display:flex;gap:10px;align-items:flex-start}
+.warn-banner-icon{font-size:18px;flex-shrink:0;line-height:1.4}
+.warn-banner-text{font-size:13px;color:#7a5c00;line-height:1.6}
+.quiz-card-footer{display:flex;gap:6px;margin-top:10px;padding-top:10px;border-top:1px solid var(--border);flex-wrap:wrap;align-items:center}
 .roster-class-block{background:var(--surface);border-radius:var(--radius);border:1px solid var(--border);margin-bottom:16px;overflow:hidden}
 .roster-class-header{display:flex;align-items:center;justify-content:space-between;padding:14px 18px;background:#f5f3ef;border-bottom:1px solid var(--border)}
 .roster-class-name{font-size:15px;font-weight:700}
@@ -411,6 +450,221 @@ function ProfileModal({ user, displayName, onSave, onCancel }) {
   )
 }
 
+// ─── Edit Quiz Modal ──────────────────────────────────────────────────────────
+function EditQuizModal({ quiz, onSave, onCancel }) {
+  const isActive = getStatus(quiz) === 'active'
+  const [warnAcked, setWarnAcked] = useState(false)
+
+  // Pre-fill all fields from existing quiz
+  const [title, setTitle] = useState(quiz.title || '')
+  const [subject, setSubject] = useState(quiz.subject || '')
+  const s = quiz.settings || {}
+  const [allowHint, setAllowHint] = useState(s.allowHint !== false)
+  const [showExplAfter, setShowExplAfter] = useState(s.showExplAfter !== false)
+  const [showCorrect, setShowCorrect] = useState(s.showCorrect !== false)
+  const [allowMultipleAttempts, setAllowMultipleAttempts] = useState(s.allowMultipleAttempts !== false)
+  const [allowedClasses, setAllowedClasses] = useState((s.allowedClasses||[]).join(','))
+  const [useRoster, setUseRoster] = useState(s.useRoster || false)
+  const [allowNameEdit, setAllowNameEdit] = useState(s.allowNameEdit !== false)
+  const [questions, setQuestions] = useState(
+    (quiz.questions||[]).map(q => ({...q, showHint:!!q.hint, showExpl:!!q.explanation}))
+  )
+  const [saving, setSaving] = useState(false)
+  const [mode, setMode] = useState('questions') // 'questions' | 'settings'
+
+  const addQ = () => setQuestions(p=>[...p, emptyQ()])
+  const removeQ = i => setQuestions(p=>p.filter((_,idx)=>idx!==i))
+  const updateQ = (i,f,v) => setQuestions(p=>{const q=[...p];q[i]={...q[i],[f]:v};return q})
+  const updateOpt = (qi,oi,v) => setQuestions(p=>{const q=[...p];q[qi].options[oi]=v;return q})
+  const toggleField = (i,f) => setQuestions(p=>{const q=[...p];q[i]={...q[i],[f]:!q[i][f]};return q})
+
+  const handleSave = async () => {
+    if (!title.trim()) { alert('請輸入測驗名稱'); return }
+    if (questions.some(q=>!q.text.trim())) { alert('請填寫所有題目'); return }
+    setSaving(true)
+    try {
+      const clean = questions.map(({showHint,showExpl,...q})=>q)
+      const classes = allowedClasses.split(',').map(s=>s.trim()).filter(Boolean)
+      await setDoc(doc(db,'quizzes',quiz.id), {
+        ...quiz,
+        title: title.trim(),
+        subject: subject.trim() || '未分類',
+        questions: clean,
+        settings: { allowHint, showExplAfter, showCorrect, allowMultipleAttempts, allowedClasses:classes, useRoster, allowNameEdit },
+        updatedAt: serverTimestamp(),
+      })
+      onSave({ ...quiz, title:title.trim(), subject:subject.trim()||'未分類', questions:clean,
+        settings:{ allowHint, showExplAfter, showCorrect, allowMultipleAttempts, allowedClasses:classes, useRoster, allowNameEdit } })
+    } catch(e) { alert('儲存失敗'); console.error(e) }
+    setSaving(false)
+  }
+
+  // If active and not yet acknowledged warning → show warning first
+  if (isActive && !warnAcked) {
+    return (
+      <div className="modal-overlay" onClick={onCancel}>
+        <div className="modal-box" onClick={e=>e.stopPropagation()} style={{maxWidth:460}}>
+          <div style={{fontSize:32,marginBottom:12,textAlign:'center'}}>⚠️</div>
+          <div className="modal-title" style={{textAlign:'center'}}>測驗派發中，確定要編輯？</div>
+          <div className="modal-sub" style={{marginBottom:0}}>
+            此測驗目前正在派發，修改題目或設定<strong>不會影響已提交的成績</strong>，
+            但可能導致進行中的學生出現題目不一致的情況。<br/><br/>
+            如需大幅修改，建議先將測驗「暫停」，完成後再重新開放。
+          </div>
+          <div className="modal-actions" style={{marginTop:24}}>
+            <button className="btn btn-secondary" onClick={onCancel}>取消</button>
+            <button className="btn" style={{background:'var(--warn)',color:'white'}} onClick={()=>setWarnAcked(true)}>
+              了解，繼續編輯
+            </button>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div className="modal-overlay" onClick={onCancel}>
+      <div onClick={e=>e.stopPropagation()} style={{
+        background:'white', borderRadius:16, width:'100%', maxWidth:720,
+        maxHeight:'90vh', overflow:'hidden', display:'flex', flexDirection:'column',
+        boxShadow:'0 20px 60px rgba(0,0,0,.3)'
+      }}>
+        {/* Header */}
+        <div style={{padding:'20px 24px', borderBottom:'1px solid var(--border)', display:'flex', alignItems:'center', justifyContent:'space-between', flexShrink:0}}>
+          <div>
+            <div style={{fontSize:18,fontWeight:700}}>✏️ 編輯測驗</div>
+            <div style={{fontSize:13,color:'var(--ink2)',marginTop:2}}>{quiz.title}</div>
+          </div>
+          <div style={{display:'flex',gap:8,alignItems:'center'}}>
+            <div className="tabs" style={{margin:0}}>
+              <div className={`tab ${mode==='questions'?'active':''}`} onClick={()=>setMode('questions')}>題目</div>
+              <div className={`tab ${mode==='settings'?'active':''}`} onClick={()=>setMode('settings')}>設定</div>
+            </div>
+            <button onClick={onCancel} style={{background:'none',border:'none',cursor:'pointer',fontSize:20,color:'var(--ink2)',padding:'4px 8px'}}>✕</button>
+          </div>
+        </div>
+
+        {/* Scrollable body */}
+        <div style={{flex:1, overflowY:'auto', padding:'20px 24px'}}>
+          {isActive && (
+            <div className="warn-banner" style={{marginBottom:16}}>
+              <div className="warn-banner-icon">⚠️</div>
+              <div className="warn-banner-text">測驗派發中 — 修改將立即生效，已提交的成績不受影響</div>
+            </div>
+          )}
+
+          {mode==='questions' && (
+            <>
+              <div className="form-row" style={{marginBottom:16}}>
+                <div><label className="form-label">測驗名稱</label>
+                  <input className="form-input" value={title} onChange={e=>setTitle(e.target.value)}/></div>
+                <div><label className="form-label">科目</label>
+                  <input className="form-input" value={subject} onChange={e=>setSubject(e.target.value)}/></div>
+              </div>
+              <div style={{fontSize:13,fontWeight:700,marginBottom:12}}>📝 題目（支援 $公式$）</div>
+              {questions.map((q,qi)=>(
+                <div key={qi} className="q-editor">
+                  <div className="q-editor-header">
+                    <span className="q-num-label">第 {qi+1} 題</span>
+                    <div style={{display:'flex',alignItems:'center',gap:12}}>
+                      <span style={{fontSize:12,color:'var(--ink2)'}}>配分</span>
+                      <input className="form-input" type="number" min="1" style={{width:60,padding:'4px 8px',fontSize:13}}
+                        value={q.points} onChange={e=>updateQ(qi,'points',parseInt(e.target.value)||1)}/>
+                      {questions.length>1 && <span style={{fontSize:12,color:'var(--danger)',cursor:'pointer'}} onClick={()=>removeQ(qi)}>✕ 刪除</span>}
+                    </div>
+                  </div>
+                  <input className="form-input" placeholder="題目內容" value={q.text}
+                    onChange={e=>updateQ(qi,'text',e.target.value)} style={{marginBottom:6}}/>
+                  {q.text && <div style={{fontSize:12,color:'var(--ink2)',marginBottom:10,padding:'4px 8px',background:'#f9f8f6',borderRadius:6}}>
+                    預覽：<MathText text={q.text}/>
+                  </div>}
+                  <div className="options-grid">
+                    {ABCD.map((lbl,oi)=>(
+                      <div key={oi} className="option-row">
+                        <span className="opt-label">{lbl}.</span>
+                        <input className="form-input" style={{fontSize:13,padding:'7px 10px'}} placeholder={`選項 ${lbl}`}
+                          value={q.options[oi]} onChange={e=>updateOpt(qi,oi,e.target.value)}/>
+                        <input type="radio" style={{accentColor:'var(--accent)',width:16,height:16,cursor:'pointer'}}
+                          name={`edit_c_${qi}`} checked={q.correct===oi} onChange={()=>updateQ(qi,'correct',oi)} id={`edit_r_${qi}_${oi}`}/>
+                        <label style={{fontSize:11,color:'var(--ink2)',cursor:'pointer'}} htmlFor={`edit_r_${qi}_${oi}`}>✓</label>
+                      </div>
+                    ))}
+                  </div>
+                  <div style={{display:'flex',flexWrap:'wrap',gap:6}}>
+                    <button className="hint-toggle" onClick={()=>toggleField(qi,'showHint')}>{q.showHint?'▼':'▶'} 💡 提示</button>
+                    <button className="hint-toggle" style={{borderColor:'#b7e4c7',color:'var(--accent)'}} onClick={()=>toggleField(qi,'showExpl')}>{q.showExpl?'▼':'▶'} 📖 解析</button>
+                  </div>
+                  {q.showHint && <div className="hint-area" style={{marginTop:10}}>
+                    <div className="hint-area-title">💡 提示</div>
+                    <textarea className="form-input" style={{resize:'vertical',minHeight:52,fontSize:13}}
+                      value={q.hint} onChange={e=>updateQ(qi,'hint',e.target.value)}/>
+                  </div>}
+                  {q.showExpl && <div className="expl-area" style={{marginTop:8}}>
+                    <div className="expl-area-title">📖 解析</div>
+                    <textarea className="form-input" style={{resize:'vertical',minHeight:64,fontSize:13}}
+                      value={q.explanation} onChange={e=>updateQ(qi,'explanation',e.target.value)}/>
+                  </div>}
+                </div>
+              ))}
+              <button className="btn btn-secondary btn-sm" onClick={addQ}>＋ 新增題目</button>
+            </>
+          )}
+
+          {mode==='settings' && (
+            <div>
+              <div style={{background:'#f5f3ef',borderRadius:10,padding:16,marginBottom:16}}>
+                <div style={{fontSize:13,fontWeight:700,marginBottom:12}}>⚙️ 測驗設定</div>
+                <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10}}>
+                  {[
+                    [allowHint,setAllowHint,'💡 允許提示'],
+                    [showExplAfter,setShowExplAfter,'📖 提交後顯示解析'],
+                    [showCorrect,setShowCorrect,'✓ 顯示正確答案'],
+                    [allowMultipleAttempts,setAllowMultipleAttempts,'🔄 允許重複作答'],
+                  ].map(([v,sv,l])=>(
+                    <label key={l} style={{display:'flex',alignItems:'center',gap:8,fontSize:13,cursor:'pointer'}}>
+                      <input type="checkbox" checked={v} onChange={e=>sv(e.target.checked)} style={{accentColor:'var(--accent)',width:15,height:15}}/>{l}
+                    </label>
+                  ))}
+                </div>
+                <div style={{marginTop:12,display:'grid',gridTemplateColumns:'1fr 1fr',gap:12}}>
+                  <div>
+                    <label className="form-label" style={{fontSize:12}}>指定班級（逗號分隔，留空=全部）</label>
+                    <input className="form-input" placeholder="如：103,105" value={allowedClasses}
+                      onChange={e=>setAllowedClasses(e.target.value)} style={{fontSize:13,padding:'8px 12px'}}/>
+                  </div>
+                  <div>
+                    <label className="form-label" style={{fontSize:12}}>學生資料輸入方式</label>
+                    <select className="form-select" style={{fontSize:13,padding:'8px 12px'}}
+                      value={useRoster?'roster':'free'} onChange={e=>setUseRoster(e.target.value==='roster')}>
+                      <option value="free">自由輸入</option>
+                      <option value="roster">使用班級名單</option>
+                    </select>
+                  </div>
+                </div>
+                {useRoster && (
+                  <label style={{display:'flex',alignItems:'center',gap:8,fontSize:13,cursor:'pointer',paddingTop:10}}>
+                    <input type="checkbox" checked={allowNameEdit} onChange={e=>setAllowNameEdit(e.target.checked)} style={{accentColor:'var(--accent)',width:15,height:15}}/>
+                    允許學生修改自動帶出的姓名
+                  </label>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Footer */}
+        <div style={{padding:'16px 24px',borderTop:'1px solid var(--border)',display:'flex',justifyContent:'flex-end',gap:10,flexShrink:0,background:'white'}}>
+          <button className="btn btn-secondary" onClick={onCancel}>取消</button>
+          <button className="btn btn-primary" onClick={handleSave} disabled={saving}>
+            {saving ? '儲存中...' : '儲存變更'}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ─── QR Code Modal ────────────────────────────────────────────────────────────
 function QRModal({ url, quizTitle, onClose }) {
   const [qrSrc, setQrSrc] = useState('')
   useEffect(() => {
@@ -761,6 +1015,8 @@ function Dashboard({ user }) {
   const [toast, setToast] = useState('')
   const [deleteTarget, setDeleteTarget] = useState(null)
   const [qrTarget, setQrTarget] = useState(null)
+  const [editTarget, setEditTarget] = useState(null)
+  const [statusChanging, setStatusChanging] = useState(null)
 
   useEffect(() => {
     async function load() {
@@ -781,9 +1037,11 @@ function Dashboard({ user }) {
     load()
   }, [user.uid])
 
+  const showToast = (msg) => { setToast(msg); setTimeout(()=>setToast(''),2500) }
+
   const copyLink = (id) => {
     navigator.clipboard.writeText(`${window.location.origin}${window.location.pathname}#/s/${id}`)
-    setToast('連結已複製！'); setTimeout(()=>setToast(''),2000)
+    showToast('連結已複製！')
   }
 
   const handleDeleteConfirm = async () => {
@@ -793,19 +1051,126 @@ function Dashboard({ user }) {
       await Promise.all(rSnap.docs.map(d=>deleteDoc(d.ref)))
       await deleteDoc(doc(db,'quizzes',deleteTarget.id))
       setQuizzes(prev=>prev.filter(q=>q.id!==deleteTarget.id))
-      setToast(`「${deleteTarget.title}」已刪除`); setTimeout(()=>setToast(''),2500)
+      showToast(`「${deleteTarget.title}」已刪除`)
     } catch(e){console.error(e); alert('刪除失敗')}
     setDeleteTarget(null)
   }
 
+  const handleStatusChange = async (quiz, newStatus) => {
+    setStatusChanging(quiz.id)
+    try {
+      await setDoc(doc(db,'quizzes',quiz.id), {...quiz, status:newStatus, updatedAt:serverTimestamp()})
+      setQuizzes(prev=>prev.map(q=>q.id===quiz.id?{...q,status:newStatus}:q))
+      const labels = {draft:'草稿',active:'派發中',ended:'已結束'}
+      showToast(`「${quiz.title}」已設為${labels[newStatus]}`)
+    } catch(e){console.error(e)}
+    setStatusChanging(null)
+  }
+
+  const handleEditSave = (updated) => {
+    setQuizzes(prev=>prev.map(q=>q.id===updated.id?{...q,...updated}:q))
+    setEditTarget(null)
+    showToast('已儲存變更')
+  }
+
   if (loading) return <div className="loading"><div className="spinner"/>載入中...</div>
+
+  // Group by status for better UX
+  const activeQuizzes = quizzes.filter(q=>getStatus(q)==='active')
+  const draftQuizzes  = quizzes.filter(q=>getStatus(q)==='draft')
+  const endedQuizzes  = quizzes.filter(q=>getStatus(q)==='ended')
+  const orderedQuizzes = [...activeQuizzes, ...draftQuizzes, ...endedQuizzes]
+
+  const QuizCard = ({ q }) => {
+    const st = getStatus(q)
+    const stInfo = STATUS[st]
+    const isEnded = st === 'ended'
+    const isChanging = statusChanging === q.id
+
+    return (
+      <div className="quiz-card" style={{opacity: isEnded ? 0.8 : 1}}>
+        {/* Top row: status badge + delete */}
+        <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:10}}>
+          <span className={`status-badge status-${st}`}>{stInfo.emoji} {stInfo.label}</span>
+          <button onClick={()=>setDeleteTarget({id:q.id,title:q.title})}
+            style={{background:'none',border:'none',cursor:'pointer',fontSize:14,color:'var(--ink2)',padding:'2px 4px',lineHeight:1}}>🗑️</button>
+        </div>
+
+        {/* Title + subject */}
+        <div style={{marginBottom:4}}>
+          <div style={{display:'flex',alignItems:'center',gap:6,marginBottom:4}}>
+            <span className="quiz-tag-pill" style={{marginBottom:0}}>{q.subject||'未分類'}</span>
+            {q.settings?.allowMultipleAttempts===false && <span style={{fontSize:10,color:'var(--danger)',background:'#ffeee8',padding:'1px 6px',borderRadius:10,fontWeight:700}}>限一次</span>}
+          </div>
+          <div className="quiz-name">{q.title}</div>
+        </div>
+
+        {/* Meta */}
+        <div className="quiz-meta" style={{marginBottom:10}}>
+          <span>📝 {q.questions?.length||0} 題</span>
+          <span>👥 {responseCounts[q.id]||0} 人次</span>
+          <span>🗓 {fmtDate(q.createdAt)}</span>
+        </div>
+
+        {/* Link (only show when active) */}
+        {st === 'active' && (
+          <div className="quiz-url" style={{marginBottom:10}}>
+            <span style={{overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>...#/s/{q.id}</span>
+            <span className="copy-btn" onClick={()=>copyLink(q.id)}>複製連結</span>
+          </div>
+        )}
+
+        {/* Status action buttons */}
+        <div style={{display:'flex',gap:6,marginBottom:8,flexWrap:'wrap'}}>
+          {st === 'draft' && (
+            <button className="btn btn-primary btn-sm" style={{flex:1}} disabled={isChanging}
+              onClick={()=>handleStatusChange(q,'active')}>
+              {isChanging ? '...' : '▶ 開始派發'}
+            </button>
+          )}
+          {st === 'active' && <>
+            <button className="btn btn-sm" style={{flex:1,background:'#fff8e1',color:'#a67c00',border:'1.5px solid #f0d060'}}
+              disabled={isChanging} onClick={()=>handleStatusChange(q,'draft')}>
+              {isChanging ? '...' : '⏸ 暫停'}
+            </button>
+            <button className="btn btn-sm" style={{flex:1,background:'#ffeee8',color:'var(--danger)',border:'1.5px solid #fcd5c5'}}
+              disabled={isChanging} onClick={()=>{ if(confirm('確定結束這份測驗？學生將無法再作答。')) handleStatusChange(q,'ended') }}>
+              ⏹ 結束
+            </button>
+          </>}
+          {st === 'ended' && (
+            <button className="btn btn-secondary btn-sm" style={{flex:1}} disabled={isChanging}
+              onClick={()=>handleStatusChange(q,'active')}>
+              {isChanging ? '...' : '↺ 重新開放'}
+            </button>
+          )}
+        </div>
+
+        {/* Bottom row: view + edit + QR */}
+        <div className="quiz-card-footer">
+          <button className="btn btn-secondary btn-sm" style={{flex:1}} onClick={()=>navigate(`/results/${q.id}`)}>📊 成績</button>
+          <button className="btn btn-secondary btn-sm" style={{flex:1}} onClick={()=>navigate(`/analytics/${q.id}`)}>📈 分析</button>
+          {!isEnded && (
+            <button className="btn btn-secondary btn-sm" onClick={()=>setEditTarget(q)} title="編輯">✏️</button>
+          )}
+          <button className="btn btn-secondary btn-sm" onClick={()=>setQrTarget(q)} title="QR Code">📱</button>
+        </div>
+      </div>
+    )
+  }
 
   return (
     <div>
       <div className="page-header">
-        <div><div className="page-title">我的測驗</div><div className="page-sub">管理你建立的所有測驗卷</div></div>
+        <div><div className="page-title">我的測驗</div>
+          <div className="page-sub">
+            {activeQuizzes.length>0 && <span style={{color:'var(--accent)',fontWeight:600}}>🟢 {activeQuizzes.length} 份派發中 </span>}
+            共 {quizzes.length} 份測驗
+          </div>
+        </div>
         <button className="btn btn-primary" onClick={()=>navigate('/create')}>＋ 新增測驗</button>
       </div>
+
       {quizzes.length===0 ? (
         <div className="empty-state">
           <div className="empty-icon">📋</div>
@@ -814,38 +1179,13 @@ function Dashboard({ user }) {
         </div>
       ) : (
         <div className="quiz-grid">
-          {quizzes.map(q=>(
-            <div key={q.id} className="quiz-card">
-              <div style={{display:'flex',alignItems:'flex-start',justifyContent:'space-between',marginBottom:8}}>
-                <div className="quiz-tag-pill">{q.subject||'未分類'}</div>
-                <button onClick={()=>setDeleteTarget({id:q.id,title:q.title})}
-                  style={{background:'none',border:'none',cursor:'pointer',fontSize:14,color:'var(--ink2)',padding:'2px 4px'}}>🗑️</button>
-              </div>
-              <div className="quiz-name">{q.title}</div>
-              <div className="quiz-meta">
-                <span>📝 {q.questions?.length||0} 題</span>
-                <span>👥 {responseCounts[q.id]||0} 人次</span>
-                <span>🗓 {fmtDate(q.createdAt)}</span>
-                {q.settings?.allowMultipleAttempts===false && <span style={{color:'var(--danger)'}}>🔒 限一次</span>}
-              </div>
-              <div className="quiz-url">
-                <span style={{overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>...#/s/{q.id}</span>
-                <span className="copy-btn" onClick={()=>copyLink(q.id)}>複製連結</span>
-              </div>
-              <div style={{display:'flex',gap:6,marginTop:12,flexWrap:'wrap'}}>
-                <button className="btn btn-secondary btn-sm" style={{flex:1}} onClick={()=>navigate(`/results/${q.id}`)}>📊 成績</button>
-                <button className="btn btn-secondary btn-sm" style={{flex:1}} onClick={()=>navigate(`/analytics/${q.id}`)}>📈 分析</button>
-                <button className="btn btn-secondary btn-sm" onClick={()=>setQrTarget(q)} title="QR Code">
-                  📱
-                </button>
-              </div>
-            </div>
-          ))}
+          {orderedQuizzes.map(q=><QuizCard key={q.id} q={q}/>)}
           <div className="new-quiz-card" onClick={()=>navigate('/create')}>
             <span style={{fontSize:20}}>＋</span>建立新測驗
           </div>
         </div>
       )}
+
       {toast && <Toast msg={toast}/>}
       {deleteTarget && <ConfirmModal title="刪除測驗"
         message={`確定要刪除「${deleteTarget.title}」嗎？\n所有學生作答紀錄也會一併刪除，無法復原。`}
@@ -853,6 +1193,7 @@ function Dashboard({ user }) {
       {qrTarget && <QRModal
         url={`${window.location.origin}${window.location.pathname}#/s/${qrTarget.id}`}
         quizTitle={qrTarget.title} onClose={()=>setQrTarget(null)}/>}
+      {editTarget && <EditQuizModal quiz={editTarget} onSave={handleEditSave} onCancel={()=>setEditTarget(null)}/>}
     </div>
   )
 }
@@ -918,6 +1259,7 @@ function CreateQuiz({ user }) {
       const docRef = await addDoc(collection(db,'quizzes'), {
         teacherId:user.uid, teacherName:user.displayName||user.email,
         title:title.trim(), subject:subject.trim()||'未分類', questions:clean,
+        status: 'draft',
         settings:{ allowHint, showExplAfter, showCorrect, allowMultipleAttempts, allowedClasses:classes, useRoster, allowNameEdit },
         createdAt:serverTimestamp(),
       })
@@ -930,14 +1272,18 @@ function CreateQuiz({ user }) {
     const url = `${window.location.origin}${window.location.pathname}#/s/${createdId}`
     return (
       <div style={{maxWidth:480,margin:'60px auto',textAlign:'center'}}>
-        <div style={{fontSize:48,marginBottom:16}}>🎉</div>
-        <div style={{fontSize:22,fontWeight:700,marginBottom:8}}>測驗已建立！</div>
-        <div className="card" style={{padding:20,marginBottom:16}}>
+        <div style={{fontSize:48,marginBottom:16}}>✅</div>
+        <div style={{fontSize:22,fontWeight:700,marginBottom:8}}>測驗已建立（草稿）</div>
+        <div style={{fontSize:14,color:'var(--ink2)',marginBottom:20}}>
+          目前為草稿狀態，學生尚無法作答。<br/>回到首頁後點「▶ 開始派發」即可開放。
+        </div>
+        <div className="card" style={{padding:20,marginBottom:16,textAlign:'left'}}>
+          <div style={{fontSize:12,color:'var(--ink2)',marginBottom:6}}>學生作答連結（派發後才有效）</div>
           <div style={{fontFamily:"'DM Mono',monospace",fontSize:12,background:'#f5f3ef',padding:'10px 14px',borderRadius:8,marginBottom:12,wordBreak:'break-all'}}>{url}</div>
-          <button className="btn btn-primary" style={{width:'100%',marginBottom:8}} onClick={()=>navigator.clipboard.writeText(url)}>複製學生作答連結</button>
+          <button className="btn btn-secondary" style={{width:'100%'}} onClick={()=>navigator.clipboard.writeText(url)}>複製連結</button>
         </div>
         <div style={{display:'flex',gap:10,justifyContent:'center'}}>
-          <button className="btn btn-secondary" onClick={()=>navigate('/')}>回到首頁</button>
+          <button className="btn btn-primary" onClick={()=>navigate('/')}>回到首頁開始派發 →</button>
           <button className="btn btn-secondary" onClick={()=>{setCreatedId(null);setTitle('');setSubject('');setQuestions([emptyQ()])}}>再建一份</button>
         </div>
       </div>
@@ -1534,6 +1880,29 @@ function StudentQuiz({ quizId }) {
     <div className="student-page">
       <div className="student-topbar"><div className="student-topbar-title">📋 QuizFlow</div></div>
       <div className="empty-state"><div className="empty-icon">❌</div><div>找不到這份測驗，請確認連結是否正確</div></div>
+    </div>
+  )
+
+  // Status guard
+  const quizStatus = getStatus(quiz)
+  if (quizStatus === 'draft') return (
+    <div className="student-page">
+      <div className="student-topbar"><div className="student-topbar-title">📋 {quiz.title}</div></div>
+      <div className="student-body" style={{textAlign:'center',paddingTop:60}}>
+        <div style={{fontSize:48,marginBottom:16}}>📝</div>
+        <div style={{fontSize:20,fontWeight:700,marginBottom:8}}>測驗尚未開放</div>
+        <div style={{fontSize:14,color:'var(--ink2)'}}>老師還在準備中，請稍後再試</div>
+      </div>
+    </div>
+  )
+  if (quizStatus === 'ended') return (
+    <div className="student-page">
+      <div className="student-topbar"><div className="student-topbar-title">📋 {quiz.title}</div></div>
+      <div className="student-body" style={{textAlign:'center',paddingTop:60}}>
+        <div style={{fontSize:48,marginBottom:16}}>🔴</div>
+        <div style={{fontSize:20,fontWeight:700,marginBottom:8}}>測驗已結束</div>
+        <div style={{fontSize:14,color:'var(--ink2)'}}>此測驗已關閉，無法作答</div>
+      </div>
     </div>
   )
 
