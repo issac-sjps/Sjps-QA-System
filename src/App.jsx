@@ -1281,7 +1281,7 @@ function Analytics({ quizId }) {
     })
   }, [quiz, responses])
 
-  const colorLabel = (cls) => ({err:'red':'🔴',err:'orange':'🟠',err:'yellow':'🟡',err:'green':'🟢'}[cls]||'')
+  // colorLabel unused, errEmoji handles display
 
   if (loading) return <div className="loading"><div className="spinner"/>載入中...</div>
   if (!quiz) return <div className="empty-state"><div>找不到這份測驗</div></div>
