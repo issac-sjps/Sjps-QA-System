@@ -460,16 +460,29 @@ function EditQuizModal({ quiz, onSave, onCancel }) {
   const [showExplAfter, setShowExplAfter] = useState(s.showExplAfter !== false)
   const [showCorrect, setShowCorrect] = useState(s.showCorrect !== false)
   const [allowMultipleAttempts, setAllowMultipleAttempts] = useState(s.allowMultipleAttempts !== false)
-  const [allowedClasses, setAllowedClasses] = useState((s.allowedClasses||[]).join(','))
+  const [selectedClasses, setSelectedClasses] = useState(new Set(s.allowedClasses||[]))
   const [useRoster, setUseRoster] = useState(s.useRoster || false)
   const [allowNameEdit, setAllowNameEdit] = useState(s.allowNameEdit !== false)
   const [startTime, setStartTime] = useState(s.startTime || '')
   const [endTime, setEndTime] = useState(s.endTime || '')
+  const [rosterClasses, setRosterClasses] = useState([])
   const [questions, setQuestions] = useState(
     (quiz.questions||[]).map(q => ({...q, showHint:!!q.hint, showExpl:!!q.explanation}))
   )
   const [saving, setSaving] = useState(false)
   const [mode, setMode] = useState('questions') // 'questions' | 'settings'
+
+  useEffect(() => {
+    getDoc(doc(db,'rosters',quiz.teacherId)).then(snap => {
+      if (snap.exists()) setRosterClasses(Object.keys(snap.data().classes||{}).sort())
+    }).catch(()=>{})
+  }, [quiz.teacherId])
+
+  const toggleClass = (cls) => setSelectedClasses(prev => {
+    const next = new Set(prev)
+    if (next.has(cls)) next.delete(cls); else next.add(cls)
+    return next
+  })
 
   const addQ = () => setQuestions(p=>[...p, emptyQ()])
   const removeQ = i => setQuestions(p=>p.filter((_,idx)=>idx!==i))
@@ -483,7 +496,7 @@ function EditQuizModal({ quiz, onSave, onCancel }) {
     setSaving(true)
     try {
       const clean = questions.map(({showHint,showExpl,...q})=>q)
-      const classes = allowedClasses.split(',').map(s=>s.trim()).filter(Boolean)
+      const classes = useRoster ? [...selectedClasses] : []
       await setDoc(doc(db,'quizzes',quiz.id), {
         ...quiz,
         title: title.trim(),
@@ -625,37 +638,63 @@ function EditQuizModal({ quiz, onSave, onCancel }) {
                     </label>
                   ))}
                 </div>
-                <div style={{marginTop:12,display:'grid',gridTemplateColumns:'1fr 1fr',gap:12}}>
-                  <div>
-                    <label className="form-label" style={{fontSize:12}}>指定班級（逗號分隔，留空=全部）</label>
-                    <input className="form-input" placeholder="如：103,105" value={allowedClasses}
-                      onChange={e=>setAllowedClasses(e.target.value)} style={{fontSize:13,padding:'8px 12px'}}/>
+
+                {/* Input mode + class selection */}
+                <div style={{marginTop:14}}>
+                  <label className="form-label" style={{fontSize:12}}>學生資料輸入方式</label>
+                  <div style={{display:'flex',gap:8,marginBottom:12}}>
+                    {[['free','✎ 自由輸入'],['roster','📚 使用班級名單']].map(([val,label])=>(
+                      <button key={val} onClick={()=>setUseRoster(val==='roster')}
+                        style={{padding:'7px 16px',borderRadius:8,fontSize:13,fontWeight:600,cursor:'pointer',fontFamily:"'Noto Sans TC',sans-serif",
+                          background:(!useRoster&&val==='free')||(useRoster&&val==='roster')?'var(--accent)':'white',
+                          color:(!useRoster&&val==='free')||(useRoster&&val==='roster')?'white':'var(--ink2)',
+                          border:(!useRoster&&val==='free')||(useRoster&&val==='roster')?'2px solid var(--accent)':'2px solid var(--border)',
+                          transition:'all .15s'}}>
+                        {label}
+                      </button>
+                    ))}
                   </div>
-                  <div>
-                    <label className="form-label" style={{fontSize:12}}>學生資料輸入方式</label>
-                    <select className="form-select" style={{fontSize:13,padding:'8px 12px'}}
-                      value={useRoster?'roster':'free'} onChange={e=>setUseRoster(e.target.value==='roster')}>
-                      <option value="free">自由輸入</option>
-                      <option value="roster">使用班級名單</option>
-                    </select>
-                  </div>
-                  <div>
-                    <label className="form-label" style={{fontSize:12}}>🕐 開始時間（選填）</label>
-                    <input className="form-input" type="datetime-local" value={startTime}
-                      onChange={e=>setStartTime(e.target.value)} style={{fontSize:13,padding:'8px 12px'}}/>
-                  </div>
-                  <div>
-                    <label className="form-label" style={{fontSize:12}}>🕐 截止時間（選填）</label>
-                    <input className="form-input" type="datetime-local" value={endTime}
-                      onChange={e=>setEndTime(e.target.value)} style={{fontSize:13,padding:'8px 12px'}}/>
+
+                  {useRoster && (
+                    <div style={{marginBottom:12}}>
+                      <label className="form-label" style={{fontSize:12}}>開放班級（留空 = 全部班級均可進入）</label>
+                      {rosterClasses.length === 0 ? (
+                        <div style={{fontSize:13,color:'var(--ink2)',padding:'8px 12px',background:'#f5f3ef',borderRadius:8}}>
+                          尚未建立班級名單，請先到「班級名單」頁面新增
+                        </div>
+                      ) : (
+                        <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
+                          {rosterClasses.map(cls => (
+                            <button key={cls} onClick={()=>toggleClass(cls)}
+                              style={{padding:'6px 16px',borderRadius:20,fontSize:13,fontWeight:700,cursor:'pointer',fontFamily:"'Noto Sans TC',sans-serif",transition:'all .15s',
+                                background:selectedClasses.has(cls)?'var(--accent)':'white',
+                                color:selectedClasses.has(cls)?'white':'var(--ink2)',
+                                border:selectedClasses.has(cls)?'2px solid var(--accent)':'2px solid var(--border)'}}>
+                              {selectedClasses.has(cls)?'✓ ':''}{cls}班
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                      <label style={{display:'flex',alignItems:'center',gap:8,fontSize:13,cursor:'pointer',marginTop:10}}>
+                        <input type="checkbox" checked={allowNameEdit} onChange={e=>setAllowNameEdit(e.target.checked)} style={{accentColor:'var(--accent)',width:15,height:15}}/>
+                        允許學生修改自動帶出的姓名
+                      </label>
+                    </div>
+                  )}
+
+                  <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:12}}>
+                    <div>
+                      <label className="form-label" style={{fontSize:12}}>🕐 開始時間（選填）</label>
+                      <input className="form-input" type="datetime-local" value={startTime}
+                        onChange={e=>setStartTime(e.target.value)} style={{fontSize:13,padding:'8px 12px'}}/>
+                    </div>
+                    <div>
+                      <label className="form-label" style={{fontSize:12}}>🕐 截止時間（選填）</label>
+                      <input className="form-input" type="datetime-local" value={endTime}
+                        onChange={e=>setEndTime(e.target.value)} style={{fontSize:13,padding:'8px 12px'}}/>
+                    </div>
                   </div>
                 </div>
-                {useRoster && (
-                  <label style={{display:'flex',alignItems:'center',gap:8,fontSize:13,cursor:'pointer',paddingTop:10}}>
-                    <input type="checkbox" checked={allowNameEdit} onChange={e=>setAllowNameEdit(e.target.checked)} style={{accentColor:'var(--accent)',width:15,height:15}}/>
-                    允許學生修改自動帶出的姓名
-                  </label>
-                )}
               </div>
             </div>
           )}
@@ -1291,11 +1330,12 @@ function CreateQuiz({ user }) {
   const [showExplAfter, setShowExplAfter] = useState(true)
   const [showCorrect, setShowCorrect] = useState(true)
   const [allowMultipleAttempts, setAllowMultipleAttempts] = useState(true)
-  const [allowedClasses, setAllowedClasses] = useState('')
+  const [selectedClasses, setSelectedClasses] = useState(new Set())
   const [useRoster, setUseRoster] = useState(false)
   const [allowNameEdit, setAllowNameEdit] = useState(true)
   const [startTime, setStartTime] = useState('')
   const [endTime, setEndTime] = useState('')
+  const [rosterClasses, setRosterClasses] = useState([])
   const [questions, setQuestions] = useState([emptyQ()])
   const [saving, setSaving] = useState(false)
   const [createdId, setCreatedId] = useState(null)
@@ -1308,6 +1348,19 @@ function CreateQuiz({ user }) {
   const updateQ = (i,f,v) => setQuestions(p=>{const q=[...p];q[i]={...q[i],[f]:v};return q})
   const updateOpt = (qi,oi,v) => setQuestions(p=>{const q=[...p];q[qi].options[oi]=v;return q})
   const toggleField = (i,f) => setQuestions(p=>{const q=[...p];q[i]={...q[i],[f]:!q[i][f]};return q})
+
+  useEffect(() => {
+    if (!user?.uid) return
+    getDoc(doc(db,'rosters',user.uid)).then(snap => {
+      if (snap.exists()) setRosterClasses(Object.keys(snap.data().classes||{}).sort())
+    }).catch(()=>{})
+  }, [user?.uid])
+
+  const toggleClass = (cls) => setSelectedClasses(prev => {
+    const next = new Set(prev)
+    if (next.has(cls)) next.delete(cls); else next.add(cls)
+    return next
+  })
 
   const handlePasteChange = (text) => {
     setPasteText(text)
@@ -1339,7 +1392,7 @@ function CreateQuiz({ user }) {
     setSaving(true)
     try {
       const clean = questions.map(({showHint,showExpl,...q})=>q)
-      const classes = allowedClasses.split(',').map(s=>s.trim()).filter(Boolean)
+      const classes = useRoster ? [...selectedClasses] : []
       const docRef = await addDoc(collection(db,'quizzes'), {
         teacherId:user.uid, teacherName:user.displayName||user.email,
         title:title.trim(), subject:subject.trim()||'未分類', questions:clean,
@@ -1467,7 +1520,7 @@ function CreateQuiz({ user }) {
         {/* Settings */}
         <div style={{background:'#f5f3ef',borderRadius:10,padding:16,marginBottom:20}}>
           <div style={{fontSize:13,fontWeight:700,marginBottom:12}}>⚙️ 測驗設定</div>
-          <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10}}>
+          <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10,marginBottom:14}}>
             {[
               [allowHint,setAllowHint,'💡 允許學生查看提示'],
               [showExplAfter,setShowExplAfter,'📖 提交後顯示解析'],
@@ -1479,36 +1532,62 @@ function CreateQuiz({ user }) {
               </label>
             ))}
           </div>
-          <div style={{marginTop:12,display:'grid',gridTemplateColumns:'1fr 1fr',gap:12}}>
-            <div>
-              <label className="form-label" style={{fontSize:12}}>指定班級（留空=全班均可，逗號分隔）</label>
-              <input className="form-input" placeholder="如：103,105,107" value={allowedClasses} onChange={e=>setAllowedClasses(e.target.value)}
-                style={{fontSize:13,padding:'8px 12px'}}/>
+
+          <div style={{marginBottom:12}}>
+            <label className="form-label" style={{fontSize:12}}>學生資料輸入方式</label>
+            <div style={{display:'flex',gap:8}}>
+              {[['free','✎ 自由輸入'],['roster','📚 使用班級名單']].map(([val,label])=>(
+                <button key={val} onClick={()=>setUseRoster(val==='roster')}
+                  style={{padding:'7px 16px',borderRadius:8,fontSize:13,fontWeight:600,cursor:'pointer',fontFamily:"'Noto Sans TC',sans-serif",
+                    background:(!useRoster&&val==='free')||(useRoster&&val==='roster')?'var(--accent)':'white',
+                    color:(!useRoster&&val==='free')||(useRoster&&val==='roster')?'white':'var(--ink2)',
+                    border:(!useRoster&&val==='free')||(useRoster&&val==='roster')?'2px solid var(--accent)':'2px solid var(--border)',
+                    transition:'all .15s'}}>
+                  {label}
+                </button>
+              ))}
             </div>
-            <div>
-              <label className="form-label" style={{fontSize:12}}>學生資料輸入方式</label>
-              <select className="form-select" style={{fontSize:13,padding:'8px 12px'}} value={useRoster?'roster':'free'} onChange={e=>setUseRoster(e.target.value==='roster')}>
-                <option value="free">自由輸入班級座號姓名</option>
-                <option value="roster">使用班級名單（選座號自動帶姓名）</option>
-              </select>
+          </div>
+
+          {useRoster && (
+            <div style={{marginBottom:12}}>
+              <label className="form-label" style={{fontSize:12}}>開放班級（留空 = 全部班級均可進入）</label>
+              {rosterClasses.length === 0 ? (
+                <div style={{fontSize:13,color:'var(--ink2)',padding:'8px 12px',background:'white',borderRadius:8,border:'1px solid var(--border)'}}>
+                  尚未建立班級名單，請先到「班級名單」頁面新增
+                </div>
+              ) : (
+                <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
+                  {rosterClasses.map(cls => (
+                    <button key={cls} onClick={()=>toggleClass(cls)}
+                      style={{padding:'6px 16px',borderRadius:20,fontSize:13,fontWeight:700,cursor:'pointer',fontFamily:"'Noto Sans TC',sans-serif",transition:'all .15s',
+                        background:selectedClasses.has(cls)?'var(--accent)':'white',
+                        color:selectedClasses.has(cls)?'white':'var(--ink2)',
+                        border:selectedClasses.has(cls)?'2px solid var(--accent)':'2px solid var(--border)'}}>
+                      {selectedClasses.has(cls)?'✓ ':''}{cls}班
+                    </button>
+                  ))}
+                </div>
+              )}
+              <label style={{display:'flex',alignItems:'center',gap:8,fontSize:13,cursor:'pointer',marginTop:10}}>
+                <input type="checkbox" checked={allowNameEdit} onChange={e=>setAllowNameEdit(e.target.checked)} style={{accentColor:'var(--accent)',width:15,height:15}}/>
+                允許學生修改自動帶出的姓名
+              </label>
             </div>
+          )}
+
+          <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:12}}>
             <div>
-              <label className="form-label" style={{fontSize:12}}>🕐 開始時間（選填，填了才限制）</label>
+              <label className="form-label" style={{fontSize:12}}>🕐 開始時間（選填）</label>
               <input className="form-input" type="datetime-local" value={startTime} onChange={e=>setStartTime(e.target.value)}
                 style={{fontSize:13,padding:'8px 12px'}}/>
             </div>
             <div>
-              <label className="form-label" style={{fontSize:12}}>🕐 截止時間（選填，到了自動結束）</label>
+              <label className="form-label" style={{fontSize:12}}>🕐 截止時間（選填）</label>
               <input className="form-input" type="datetime-local" value={endTime} onChange={e=>setEndTime(e.target.value)}
                 style={{fontSize:13,padding:'8px 12px'}}/>
             </div>
           </div>
-          {useRoster && (
-            <label style={{display:'flex',alignItems:'center',gap:8,fontSize:13,cursor:'pointer',padding:'8px 0 0'}}>
-              <input type="checkbox" checked={allowNameEdit} onChange={e=>setAllowNameEdit(e.target.checked)} style={{accentColor:'var(--accent)',width:15,height:15}}/>
-              允許學生修改自動帶出的姓名
-            </label>
-          )}
         </div>
 
         <div style={{borderTop:'1px solid var(--border)',paddingTop:20}}>
