@@ -2067,6 +2067,7 @@ function StudentQuiz({ quizId }) {
     const correctCount = quiz.questions.filter((_,i)=>answers[i]===quiz.questions[i].correct).length
     const bestScore = sessionScores.length ? Math.max(...sessionScores) : score
     return (
+      <>
       <div className="student-page">
         <div className="student-topbar">
           <div><div className="student-topbar-title">{quiz.title}</div></div>
@@ -2143,6 +2144,7 @@ function StudentQuiz({ quizId }) {
         </div>
       </div>
       <button className="float-top-btn" onClick={()=>window.scrollTo({top:0,behavior:'smooth'})} title="回到頂部">↑</button>
+      </>
     )
   }
 
