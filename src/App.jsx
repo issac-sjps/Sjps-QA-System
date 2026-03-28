@@ -382,6 +382,10 @@ tr:hover td{background:#f9f8f6}
 .attempt-row:last-child{border-bottom:none}
 /* QR */
 .qr-img{display:block;margin:0 auto;border-radius:8px;image-rendering:pixelated}
+.float-top-btn{position:fixed;bottom:28px;right:20px;width:44px;height:44px;border-radius:50%;background:var(--accent);color:white;border:none;font-size:20px;cursor:pointer;box-shadow:0 4px 16px rgba(0,0,0,.2);display:flex;align-items:center;justify-content:center;z-index:50;transition:all .2s;line-height:1}
+.float-top-btn:hover{background:#235c42;transform:translateY(-2px);box-shadow:0 6px 20px rgba(0,0,0,.25)}
+.unanswered-highlight{animation:pulse-border .6s ease 2;border-color:var(--danger)!important}
+@keyframes pulse-border{0%,100%{box-shadow:none}50%{box-shadow:0 0 0 4px rgba(193,68,14,.3)}}
 @media(max-width:768px){
   .sidebar{display:none}
   .main{margin-left:0;max-width:100%;padding:16px}
@@ -1874,7 +1878,6 @@ function StudentQuiz({ quizId }) {
   const [saving, setSaving] = useState(false)
   const [sessionScores, setSessionScores] = useState([])
   const [alreadyAttempted, setAlreadyAttempted] = useState(false)
-  const [checkingAttempt, setCheckingAttempt] = useState(false)
 
   useEffect(() => {
     async function load() {
@@ -1921,36 +1924,58 @@ function StudentQuiz({ quizId }) {
 
   const useDropdowns = availableClasses.length > 0
 
-  const handleInfoSubmit = async () => {
+  // localStorage key for this student+quiz
+  const lsKey = (cls, seat) => `quizflow_submitted_${quizId}_${cls}_${seat}`
+
+  const handleInfoSubmit = () => {
     const seatPadded = padSeat(info.seat)
-    const finalInfo = {...info, seat:seatPadded}
+    const finalInfo = {...info, seat: seatPadded}
     setInfo(finalInfo)
-    if (s.allowMultipleAttempts===false) {
-      setCheckingAttempt(true)
-      try {
-        const snap = await getDocs(query(collection(db,'responses'),
-          where('quizId','==',quizId), where('class','==',finalInfo.class), where('seat','==',seatPadded)))
-        if (snap.size > 0) { setAlreadyAttempted(true); setCheckingAttempt(false); return }
-      } catch(e){console.error(e)}
-      setCheckingAttempt(false)
+
+    // Single-attempt: check localStorage first (no DB read needed)
+    if (s.allowMultipleAttempts === false) {
+      if (localStorage.getItem(lsKey(finalInfo.class, seatPadded))) {
+        setAlreadyAttempted(true)
+        return
+      }
     }
     setStep('quiz')
   }
 
   const handleSubmit = async () => {
     setSaving(true)
-    let sc=0; quiz.questions.forEach((q,i)=>{if(answers[i]===q.correct) sc+=q.points})
-    setScore(sc); setSessionScores(prev=>[...prev,sc])
+    let sc = 0
+    quiz.questions.forEach((q,i) => { if (answers[i] === q.correct) sc += q.points })
+    setScore(sc)
+    setSessionScores(prev => [...prev, sc])
+
     try {
-      const existing = await getDocs(query(collection(db,'responses'),
-        where('quizId','==',quizId), where('class','==',info.class), where('seat','==',info.seat)))
-      await addDoc(collection(db,'responses'),{
-        quizId, name:info.name, class:info.class, seat:info.seat,
-        score:sc, answers:quiz.questions.map((_,i)=>answers[i]??-1),
-        submittedAt:serverTimestamp(), attemptNumber:existing.size+1,
-      })
-    } catch(e){console.error('儲存失敗',e)}
-    setSaving(false); setStep('result')
+      const attemptNum = sessionScores.length + 1
+
+      if (s.allowMultipleAttempts === false) {
+        // Single-attempt: use fixed document ID to prevent duplicates at DB level
+        // Firebase will reject a second write if the doc already exists via rules
+        const fixedId = `${quizId}_${info.class}_${info.seat}`
+        await setDoc(doc(db, 'responses', fixedId), {
+          quizId, name: info.name, class: info.class, seat: info.seat,
+          score: sc, answers: quiz.questions.map((_,i) => answers[i] ?? -1),
+          submittedAt: serverTimestamp(), attemptNumber: 1,
+        })
+        // Mark in localStorage so same device is blocked instantly next time
+        localStorage.setItem(lsKey(info.class, info.seat), '1')
+      } else {
+        // Multi-attempt: use addDoc with attempt number from session count
+        await addDoc(collection(db, 'responses'), {
+          quizId, name: info.name, class: info.class, seat: info.seat,
+          score: sc, answers: quiz.questions.map((_,i) => answers[i] ?? -1),
+          submittedAt: serverTimestamp(), attemptNumber: attemptNum,
+        })
+      }
+    } catch(e) { console.error('儲存失敗', e) }
+
+    setSaving(false)
+    setStep('result')
+    setTimeout(() => window.scrollTo({ top: 0, behavior: 'smooth' }), 50)
   }
 
   const handleRetry = () => {
@@ -2117,6 +2142,7 @@ function StudentQuiz({ quizId }) {
           )}
         </div>
       </div>
+      <button className="float-top-btn" onClick={()=>window.scrollTo({top:0,behavior:'smooth'})} title="回到頂部">↑</button>
     )
   }
 
@@ -2166,23 +2192,23 @@ function StudentQuiz({ quizId }) {
                   style={{background: s.useRoster&&!s.allowNameEdit&&info.name?'#f5f3ef':undefined}}/>
               </div>
             </div>
-            <button onClick={handleInfoSubmit} disabled={!info.name||!info.class||!info.seat||checkingAttempt}
+            <button onClick={handleInfoSubmit} disabled={!info.name||!info.class||!info.seat}
               style={{width:'100%',background:(!info.name||!info.class||!info.seat)?'#ccc':'var(--accent)',color:'white',padding:'13px 20px',borderRadius:8,border:'none',fontSize:15,fontWeight:700,cursor:(!info.name||!info.class||!info.seat)?'not-allowed':'pointer',fontFamily:"'Noto Sans TC',sans-serif"}}>
-              {checkingAttempt?'確認中...':'開始作答 →'}
+              開始作答 →
             </button>
           </div>
         )}
 
         {step==='quiz' && (
           <>
-            <div className="progress-bar-wrap">
+            <div className="progress-bar-wrap" id="quiz-top">
               <span style={{fontSize:13,color:'var(--ink2)',flexShrink:0}}>已作答 {Object.keys(answers).length}/{quiz.questions.length}</span>
               <div className="progress-track">
                 <div className="progress-fill" style={{width:`${Object.keys(answers).length/quiz.questions.length*100}%`}}/>
               </div>
             </div>
             {quiz.questions.map((q,qi)=>(
-              <div key={qi} className="sq-card">
+              <div key={qi} id={`q-${qi}`} className="sq-card">
                 <div className="sq-num">
                   <span>第 {qi+1} 題 · {q.points}分</span>
                   {s.allowHint!==false&&q.hint&&(
@@ -2203,10 +2229,28 @@ function StudentQuiz({ quizId }) {
                 </div>
               </div>
             ))}
-            <button onClick={handleSubmit} disabled={!quiz.questions.every((_,i)=>answers[i]!==undefined)||saving}
-              style={{width:'100%',background:quiz.questions.every((_,i)=>answers[i]!==undefined)&&!saving?'var(--accent)':'#ccc',color:'white',padding:'15px 20px',borderRadius:10,border:'none',fontSize:16,fontWeight:700,cursor:quiz.questions.every((_,i)=>answers[i]!==undefined)&&!saving?'pointer':'not-allowed',fontFamily:"'Noto Sans TC',sans-serif",marginBottom:32}}>
-              {saving?'儲存中...':quiz.questions.every((_,i)=>answers[i]!==undefined)?'提交答案 →':`還有 ${quiz.questions.length-Object.keys(answers).length} 題未作答`}
+            <button
+              onClick={() => {
+                const allAnswered = quiz.questions.every((_,i) => answers[i] !== undefined)
+                if (!allAnswered) {
+                  // Find first unanswered and scroll to it
+                  const firstUnanswered = quiz.questions.findIndex((_,i) => answers[i] === undefined)
+                  const el = document.getElementById(`q-${firstUnanswered}`)
+                  if (el) {
+                    el.scrollIntoView({ behavior:'smooth', block:'center' })
+                    el.classList.add('unanswered-highlight')
+                    setTimeout(() => el.classList.remove('unanswered-highlight'), 1500)
+                  }
+                  return
+                }
+                handleSubmit()
+              }}
+              disabled={saving}
+              style={{width:'100%',background:saving?'#ccc':'var(--accent)',color:'white',padding:'15px 20px',borderRadius:10,border:'none',fontSize:16,fontWeight:700,cursor:saving?'not-allowed':'pointer',fontFamily:"'Noto Sans TC',sans-serif",marginBottom:32}}>
+              {saving ? '儲存中...' : quiz.questions.every((_,i)=>answers[i]!==undefined) ? '提交答案 →' : `⬆ 跳到第 ${quiz.questions.findIndex((_,i)=>answers[i]===undefined)+1} 題（未作答）`}
             </button>
+            {/* Floating scroll-to-top */}
+            <button className="float-top-btn" onClick={()=>document.getElementById('quiz-top')?.scrollIntoView({behavior:'smooth'})} title="回到頂部">↑</button>
           </>
         )}
       </div>
