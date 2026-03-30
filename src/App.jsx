@@ -75,9 +75,36 @@ function parseQuestionRows(rows) {
   }))
 }
 function parsePasteText(text) {
-  const lines = text.trim().split('\n').filter(l=>l.trim())
+  if (!text || !text.trim()) return null
+  const lines = text.trim().split('\n').filter(l => l.trim())
   if (lines.length < 2) return null
-  return parseQuestionRows(lines.map(l=>l.split('\t')))
+
+  // Detect format
+  const firstData = lines[0]
+
+  // Format 1: Markdown pipe table  | 題目 | 選A | 選B | ...
+  if (firstData.includes('|')) {
+    const dataLines = lines.filter(l => !l.match(/^\s*\|[\s\-|]+\|\s*$/)) // remove separator rows like |---|---|
+    if (dataLines.length < 2) return null
+    const rows = dataLines.map(l =>
+      l.replace(/^\||\|$/g, '').split('|').map(c => c.trim())
+    )
+    return parseQuestionRows(rows)
+  }
+
+  // Format 2: Tab separated (from Excel copy or AI table)
+  if (firstData.includes('\t')) {
+    return parseQuestionRows(lines.map(l => l.split('\t')))
+  }
+
+  // Format 3: Multiple spaces as separator (2+ spaces)
+  // Only if consistent — try splitting on 2+ spaces
+  const bySpaces = lines.map(l => l.split(/\s{2,}/))
+  if (bySpaces[0].length >= 6) {
+    return parseQuestionRows(bySpaces)
+  }
+
+  return null
 }
 
 function exportToExcel(quiz, responses) {
@@ -239,6 +266,19 @@ tr:hover td{background:#f9f8f6}
 .edit-modal-body{flex:1;overflow-y:auto;padding:24px}
 /* Quiz editor */
 .q-editor{border:1.5px solid var(--border);border-radius:10px;padding:18px;margin-bottom:12px;background:white}
+.q-preview-panel{background:#f8f7ff;border:1.5px solid #c5bff0;border-radius:8px;padding:16px;margin-top:10px}
+.q-preview-title{font-size:11px;font-weight:700;color:#5b4fcf;letter-spacing:.08em;text-transform:uppercase;margin-bottom:10px}
+.q-preview-question{font-size:15px;font-weight:600;color:var(--ink);line-height:1.7;margin-bottom:12px}
+.q-preview-opts{display:flex;flex-direction:column;gap:6px}
+.q-preview-opt{display:flex;align-items:center;gap:10px;padding:7px 12px;border-radius:7px;font-size:14px}
+.q-preview-opt.is-correct{background:#e8f5ee;border:1.5px solid #b7e4c7;font-weight:600;color:var(--accent)}
+.q-preview-opt.not-correct{background:white;border:1.5px solid var(--border);color:var(--ink2)}
+.q-preview-opt-letter{font-weight:700;width:20px;flex-shrink:0}
+.preview-btn{font-size:12px;padding:4px 10px;border-radius:6px;border:1.5px solid #c5bff0;background:#f0eeff;color:#5b4fcf;cursor:pointer;font-family:'Noto Sans TC',sans-serif;font-weight:600;transition:all .15s}
+.preview-btn:hover{background:#e4dfff}
+.preview-btn.active{background:#5b4fcf;color:white;border-color:#5b4fcf}
+.batch-paste-area{background:#f5f3ef;border-radius:10px;padding:16px;margin-top:12px}
+.batch-paste-title{font-size:13px;font-weight:700;margin-bottom:10px;display:flex;align-items:center;gap:6px}
 .q-editor-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px}
 .q-num-label{font-size:11px;font-weight:700;color:var(--ink2);text-transform:uppercase;letter-spacing:.1em}
 .options-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px;margin-bottom:12px}
@@ -447,6 +487,184 @@ function ProfileModal({ user, displayName, onSave, onCancel }) {
   )
 }
 
+// ─── QuestionEditorCard ───────────────────────────────────────────────────────
+function PreviewModal({ q, qi, onClose }) {
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal-box" onClick={e=>e.stopPropagation()} style={{maxWidth:520}}>
+        <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:16}}>
+          <div style={{fontSize:16,fontWeight:700}}>👁 第 {qi+1} 題預覽</div>
+          <button onClick={onClose} style={{background:'none',border:'none',fontSize:20,cursor:'pointer',color:'var(--ink2)',lineHeight:1}}>✕</button>
+        </div>
+        <div className="q-preview-question">
+          {q.text ? <MathText text={q.text}/> : <span style={{color:'var(--ink2)',fontStyle:'italic'}}>尚未輸入題目</span>}
+        </div>
+        <div className="q-preview-opts" style={{margin:'12px 0'}}>
+          {q.options.map((opt,oi)=>(
+            <div key={oi} className={`q-preview-opt ${oi===q.correct?'is-correct':'not-correct'}`}>
+              <span className="q-preview-opt-letter">{ABCD[oi]}.</span>
+              {opt ? <MathText text={opt}/> : <span style={{fontStyle:'italic',opacity:.5}}>選項 {ABCD[oi]}</span>}
+              {oi===q.correct && <span style={{marginLeft:'auto',fontSize:11,fontWeight:700}}>✓ 正確答案</span>}
+            </div>
+          ))}
+        </div>
+        {(q.hint||q.explanation) && (
+          <div style={{display:'flex',flexDirection:'column',gap:8,marginTop:8}}>
+            {q.hint && <div style={{fontSize:13,color:'#a67c00',background:'#fffbf0',padding:'8px 12px',borderRadius:8,lineHeight:1.6}}>
+              <strong>💡 提示：</strong><MathText text={q.hint}/>
+            </div>}
+            {q.explanation && <div style={{fontSize:13,color:'var(--accent)',background:'#f0f9f4',padding:'8px 12px',borderRadius:8,lineHeight:1.6}}>
+              <strong>📖 解析：</strong><MathText text={q.explanation}/>
+            </div>}
+          </div>
+        )}
+        <div className="modal-actions" style={{marginTop:20}}>
+          <button className="btn btn-secondary" onClick={onClose}>關閉</button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function QuestionEditorCard({ q, qi, total, updateQ, updateOpt, toggleField, removeQ }) {
+  const [showPreview, setShowPreview] = useState(false)
+  return (
+    <>
+    <div className="q-editor">
+      <div className="q-editor-header">
+        <span className="q-num-label">第 {qi+1} 題</span>
+        <div style={{display:'flex',alignItems:'center',gap:8}}>
+          <button className="preview-btn" onClick={()=>setShowPreview(true)}>👁 預覽</button>
+          <span style={{fontSize:12,color:'var(--ink2)'}}>配分</span>
+          <input className="form-input" type="number" min="1" style={{width:60,padding:'4px 8px',fontSize:13}}
+            value={q.points} onChange={e=>updateQ(qi,'points',parseInt(e.target.value)||1)}/>
+          {total>1 && <span style={{fontSize:12,color:'var(--danger)',cursor:'pointer'}} onClick={()=>removeQ(qi)}>✕ 刪除</span>}
+        </div>
+      </div>
+      <input className="form-input" placeholder="輸入題目（可用 $\frac{3}{8}$ 表示分數）" value={q.text}
+        onChange={e=>updateQ(qi,'text',e.target.value)} style={{marginBottom:6}}/>
+      <div className="options-grid">
+        {ABCD.map((lbl,oi)=>(
+          <div key={oi} className="option-row">
+            <span className="opt-label">{lbl}.</span>
+            <input className="form-input" style={{fontSize:13,padding:'7px 10px'}} placeholder={`選項 ${lbl}`}
+              value={q.options[oi]} onChange={e=>updateOpt(qi,oi,e.target.value)}/>
+            <input type="radio" style={{accentColor:'var(--accent)',width:16,height:16,cursor:'pointer'}}
+              name={`c_${qi}`} checked={q.correct===oi} onChange={()=>updateQ(qi,'correct',oi)} id={`r_${qi}_${oi}`}/>
+            <label style={{fontSize:11,color:'var(--ink2)',cursor:'pointer'}} htmlFor={`r_${qi}_${oi}`}>✓正確</label>
+          </div>
+        ))}
+      </div>
+      <div style={{display:'flex',flexWrap:'wrap',gap:6}}>
+        <button className="hint-toggle" onClick={()=>toggleField(qi,'showHint')}>{q.showHint?'▼':'▶'} 💡 提示</button>
+        <button className="hint-toggle" style={{borderColor:'#b7e4c7',color:'var(--accent)'}} onClick={()=>toggleField(qi,'showExpl')}>{q.showExpl?'▼':'▶'} 📖 解析</button>
+      </div>
+      {q.showHint && <div className="hint-area" style={{marginTop:10}}>
+        <div className="hint-area-title">💡 提示（學生作答中可主動查看）</div>
+        <textarea className="form-input" style={{resize:'vertical',minHeight:56,fontSize:13}}
+          placeholder="例：分母是全部份數，分子是已吃的份數" value={q.hint} onChange={e=>updateQ(qi,'hint',e.target.value)}/>
+      </div>}
+      {q.showExpl && <div className="expl-area" style={{marginTop:8}}>
+        <div className="expl-area-title">📖 解析（提交後才顯示）</div>
+        <textarea className="form-input" style={{resize:'vertical',minHeight:72,fontSize:13}}
+          placeholder="例：全部8份（分母），吃了3份（分子），所以是3/8" value={q.explanation} onChange={e=>updateQ(qi,'explanation',e.target.value)}/>
+      </div>}
+    </div>
+    {showPreview && <PreviewModal q={q} qi={qi} onClose={()=>setShowPreview(false)}/>}
+    </>
+  )
+}
+
+// ─── BatchPasteSection ────────────────────────────────────────────────────────
+function BatchPasteSection({ onImport, appendMode=false }) {
+  const [pasteText, setPasteText] = useState('')
+  const [preview, setPreview] = useState(null)
+  const [format, setFormat] = useState('auto') // 'auto'|'tab'|'pipe'
+
+  const handleChange = (text) => {
+    setPasteText(text)
+    setPreview(text.trim() ? parsePasteText(text) : null)
+  }
+
+  const handleImport = () => {
+    if (!preview?.length) return
+    onImport(preview)
+    setPasteText(''); setPreview(null)
+  }
+
+  const formatExamples = {
+    tab:  "題目\t選A\t選B\t選C\t選D\t正確(A/B/C/D)\t配分\t提示(選填)\t解析(選填)\n小明吃了幾分之幾\t1/8\t3/8\t5/8\t8/3\tB\t10\t分母是份數\t8份吃3份",
+    pipe: "| 題目 | 選A | 選B | 選C | 選D | 正確 | 配分 | 提示 | 解析 |\n|---|---|---|---|---|---|---|---|---|\n| 小明吃了幾分之幾 | 1/8 | 3/8 | 5/8 | 8/3 | B | 10 | 分母是份數 | 8份吃3份 |",
+  }
+
+  return (
+    <div className="batch-paste-area">
+      <div className="batch-paste-title">
+        📋 {appendMode ? '批次新增題目（貼上後追加到現有題目後面）' : '貼上 AI 生成的題目'}
+      </div>
+
+      {/* Format tabs */}
+      <div style={{display:'flex',gap:6,marginBottom:10}}>
+        {[['auto','🔍 自動偵測'],['tab','📊 Tab 分隔（Excel）'],['pipe','📝 管線格式（AI）']].map(([f,label])=>(
+          <button key={f} onClick={()=>{ setFormat(f); if(f!=='auto') setPasteText(formatExamples[f]||''); }}
+            style={{padding:'5px 12px',borderRadius:6,fontSize:12,fontWeight:600,cursor:'pointer',fontFamily:"'Noto Sans TC',sans-serif",
+              background:format===f?'var(--accent)':'white',color:format===f?'white':'var(--ink2)',
+              border:format===f?'1.5px solid var(--accent)':'1.5px solid var(--border)',transition:'all .15s'}}>
+            {label}
+          </button>
+        ))}
+      </div>
+
+      <div style={{fontSize:12,color:'var(--ink2)',marginBottom:8}}>
+        {format==='pipe' && '支援 Markdown 表格（從 AI 複製的表格格式）'}
+        {format==='tab'  && '支援 Tab 分隔（從 Excel 直接複製貼上）'}
+        {format==='auto' && '自動偵測 Tab 或 Markdown 管線格式'}
+      </div>
+
+      <textarea className="paste-zone"
+        placeholder={format==='pipe'
+          ? "| 題目 | 選A | 選B | 選C | 選D | 正確(A/B/C/D) | 配分 | 提示 | 解析 |\n|---|---|---|---|---|---|---|---|---|\n| 題目內容 | 甲 | 乙 | 丙 | 丁 | A | 10 | | |"
+          : "第一列是標題列，欄位用 Tab 分隔\n\n題目\t選A\t選B\t選C\t選D\t正確(A/B/C/D)\t配分\t提示(選填)\t解析(選填)\n小明吃了3/8個披薩...\t1/8\t3/8\t5/8\t8/3\tB\t10\t分母是份數\t全部8份吃了3份"}
+        value={pasteText}
+        onChange={e=>handleChange(e.target.value)}
+        style={{minHeight:140}}
+      />
+
+      {preview && preview.length > 0 && (
+        <div className="parse-preview" style={{marginTop:10}}>
+          <div className="parse-preview-title">✅ 成功解析 {preview.length} 道題目</div>
+          {preview.slice(0,3).map((q,i)=>(
+            <div key={i} className="preview-row">
+              <div style={{fontWeight:700,color:'var(--accent)',flexShrink:0,width:40}}>第{i+1}題</div>
+              <div style={{flex:1}}>
+                <div style={{fontWeight:600,marginBottom:2,fontSize:13}}>{q.text.slice(0,40)}{q.text.length>40?'...':''}</div>
+                <div style={{fontSize:11,color:'var(--ink2)'}}>
+                  {q.options.map((o,oi)=>(
+                    <span key={oi} style={{marginRight:8,color:oi===q.correct?'var(--accent)':'var(--ink2)',fontWeight:oi===q.correct?700:400}}>
+                      {ABCD[oi]}.{o.slice(0,6)}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            </div>
+          ))}
+          {preview.length>3 && <div style={{fontSize:12,color:'var(--ink2)',padding:'6px 0'}}>...還有 {preview.length-3} 道題目</div>}
+          <button className="btn btn-primary" style={{marginTop:10,width:'100%'}} onClick={handleImport}>
+            {appendMode ? `＋ 追加這 ${preview.length} 道題目` : `匯入這 ${preview.length} 道題目 →`}
+          </button>
+        </div>
+      )}
+      {pasteText && (!preview||preview.length===0) && (
+        <div style={{marginTop:10,padding:'10px 14px',background:'#ffeee8',borderRadius:8,fontSize:13,color:'var(--danger)'}}>
+          ⚠️ 無法解析。請確認：<br/>
+          • Tab 分隔：第一列是標題，欄位用 Tab 分隔<br/>
+          • 管線格式：每列以 | 開頭和結尾
+        </div>
+      )}
+    </div>
+  )
+}
+
 // ─── Edit Quiz Modal ──────────────────────────────────────────────────────────
 function EditQuizModal({ quiz, onSave, onCancel }) {
   const isActive = getStatus(quiz) === 'active'
@@ -573,52 +791,13 @@ function EditQuizModal({ quiz, onSave, onCancel }) {
                 <div><label className="form-label">科目</label>
                   <input className="form-input" value={subject} onChange={e=>setSubject(e.target.value)}/></div>
               </div>
-              <div style={{fontSize:13,fontWeight:700,marginBottom:12}}>📝 題目（支援 $公式$）</div>
+              <div style={{fontSize:13,fontWeight:700,marginBottom:12}}>📝 題目（支援 $公式$，每題右上角可預覽）</div>
               {questions.map((q,qi)=>(
-                <div key={qi} className="q-editor">
-                  <div className="q-editor-header">
-                    <span className="q-num-label">第 {qi+1} 題</span>
-                    <div style={{display:'flex',alignItems:'center',gap:12}}>
-                      <span style={{fontSize:12,color:'var(--ink2)'}}>配分</span>
-                      <input className="form-input" type="number" min="1" style={{width:60,padding:'4px 8px',fontSize:13}}
-                        value={q.points} onChange={e=>updateQ(qi,'points',parseInt(e.target.value)||1)}/>
-                      {questions.length>1 && <span style={{fontSize:12,color:'var(--danger)',cursor:'pointer'}} onClick={()=>removeQ(qi)}>✕ 刪除</span>}
-                    </div>
-                  </div>
-                  <input className="form-input" placeholder="題目內容" value={q.text}
-                    onChange={e=>updateQ(qi,'text',e.target.value)} style={{marginBottom:6}}/>
-                  {q.text && <div style={{fontSize:12,color:'var(--ink2)',marginBottom:10,padding:'4px 8px',background:'#f9f8f6',borderRadius:6}}>
-                    預覽：<MathText text={q.text}/>
-                  </div>}
-                  <div className="options-grid">
-                    {ABCD.map((lbl,oi)=>(
-                      <div key={oi} className="option-row">
-                        <span className="opt-label">{lbl}.</span>
-                        <input className="form-input" style={{fontSize:13,padding:'7px 10px'}} placeholder={`選項 ${lbl}`}
-                          value={q.options[oi]} onChange={e=>updateOpt(qi,oi,e.target.value)}/>
-                        <input type="radio" style={{accentColor:'var(--accent)',width:16,height:16,cursor:'pointer'}}
-                          name={`edit_c_${qi}`} checked={q.correct===oi} onChange={()=>updateQ(qi,'correct',oi)} id={`edit_r_${qi}_${oi}`}/>
-                        <label style={{fontSize:11,color:'var(--ink2)',cursor:'pointer'}} htmlFor={`edit_r_${qi}_${oi}`}>✓</label>
-                      </div>
-                    ))}
-                  </div>
-                  <div style={{display:'flex',flexWrap:'wrap',gap:6}}>
-                    <button className="hint-toggle" onClick={()=>toggleField(qi,'showHint')}>{q.showHint?'▼':'▶'} 💡 提示</button>
-                    <button className="hint-toggle" style={{borderColor:'#b7e4c7',color:'var(--accent)'}} onClick={()=>toggleField(qi,'showExpl')}>{q.showExpl?'▼':'▶'} 📖 解析</button>
-                  </div>
-                  {q.showHint && <div className="hint-area" style={{marginTop:10}}>
-                    <div className="hint-area-title">💡 提示</div>
-                    <textarea className="form-input" style={{resize:'vertical',minHeight:52,fontSize:13}}
-                      value={q.hint} onChange={e=>updateQ(qi,'hint',e.target.value)}/>
-                  </div>}
-                  {q.showExpl && <div className="expl-area" style={{marginTop:8}}>
-                    <div className="expl-area-title">📖 解析</div>
-                    <textarea className="form-input" style={{resize:'vertical',minHeight:64,fontSize:13}}
-                      value={q.explanation} onChange={e=>updateQ(qi,'explanation',e.target.value)}/>
-                  </div>}
-                </div>
+                <QuestionEditorCard key={qi} q={q} qi={qi} total={questions.length}
+                  updateQ={updateQ} updateOpt={updateOpt} toggleField={toggleField} removeQ={removeQ}/>
               ))}
               <button className="btn btn-secondary btn-sm" onClick={addQ}>＋ 新增題目</button>
+              <BatchPasteSection appendMode={true} onImport={parsed => setQuestions(prev=>[...prev,...parsed])}/>
             </>
           )}
 
@@ -1465,45 +1644,7 @@ function CreateQuiz({ user }) {
 
       {mode==='paste' && (
         <div className="card" style={{marginBottom:20}}>
-          <div style={{fontSize:14,fontWeight:700,marginBottom:4}}>📋 貼上 AI 生成的題目文字</div>
-          <div style={{fontSize:12,color:'var(--ink2)',marginBottom:12}}>
-            格式為 Tab 分隔，第一列是標題列<br/>
-            <span style={{fontFamily:"'DM Mono',monospace",fontSize:11,background:'#f5f3ef',padding:'2px 6px',borderRadius:4,display:'inline-block',marginTop:4}}>
-              題目 + 選A + 選B + 選C + 選D + 正確答案(A/B/C/D) + 配分 + 提示 + 解析
-            </span>
-          </div>
-          <textarea className="paste-zone"
-            placeholder={"直接把 AI 給你的表格文字貼在這裡...\n\n第一列必須是標題列，欄位用 Tab 分隔\n（從 ChatGPT/Claude 的表格複製通常就是 Tab 格式）"}
-            value={pasteText} onChange={e=>handlePasteChange(e.target.value)}/>
-          {pastePreview?.length>0 && (
-            <div className="parse-preview">
-              <div className="parse-preview-title">✅ 預覽：成功解析 {pastePreview.length} 道題目</div>
-              {pastePreview.slice(0,3).map((q,i)=>(
-                <div key={i} className="preview-row">
-                  <div style={{fontWeight:700,color:'var(--accent)',flexShrink:0,width:40}}>第{i+1}題</div>
-                  <div style={{flex:1}}>
-                    <div style={{fontWeight:600,marginBottom:2}}>{q.text.slice(0,40)}{q.text.length>40?'...':''}</div>
-                    <div style={{fontSize:11,color:'var(--ink2)'}}>
-                      {q.options.map((o,oi)=>(
-                        <span key={oi} style={{marginRight:8,color:oi===q.correct?'var(--accent)':'var(--ink2)',fontWeight:oi===q.correct?700:400}}>
-                          {ABCD[oi]}.{o}
-                        </span>
-                      ))}
-                    </div>
-                  </div>
-                </div>
-              ))}
-              {pastePreview.length>3 && <div style={{fontSize:12,color:'var(--ink2)',paddingTop:8}}>...還有 {pastePreview.length-3} 道題目</div>}
-              <button className="btn btn-primary" style={{marginTop:12,width:'100%'}} onClick={handlePasteImport}>
-                匯入這 {pastePreview.length} 道題目 →
-              </button>
-            </div>
-          )}
-          {pasteText && (!pastePreview||pastePreview.length===0) && (
-            <div style={{marginTop:12,padding:'10px 14px',background:'#ffeee8',borderRadius:8,fontSize:13,color:'var(--danger)'}}>
-              ⚠️ 無法解析，請確認第一列是標題，欄位用 Tab 分隔
-            </div>
-          )}
+          <BatchPasteSection onImport={parsed => { setQuestions(parsed); setMode('manual') }}/>
         </div>
       )}
 
@@ -1591,52 +1732,13 @@ function CreateQuiz({ user }) {
         </div>
 
         <div style={{borderTop:'1px solid var(--border)',paddingTop:20}}>
-          <div style={{fontSize:14,fontWeight:700,marginBottom:16}}>📝 題目設定（支援數學公式：使用 $公式$ 表示行內公式）</div>
+          <div style={{fontSize:14,fontWeight:700,marginBottom:16}}>📝 題目設定（支援 $公式$，每題右上角可預覽）</div>
           {questions.map((q,qi)=>(
-            <div key={qi} className="q-editor">
-              <div className="q-editor-header">
-                <span className="q-num-label">第 {qi+1} 題</span>
-                <div style={{display:'flex',alignItems:'center',gap:12}}>
-                  <span style={{fontSize:12,color:'var(--ink2)'}}>配分</span>
-                  <input className="form-input" type="number" min="1" style={{width:60,padding:'4px 8px',fontSize:13}}
-                    value={q.points} onChange={e=>updateQ(qi,'points',parseInt(e.target.value)||1)}/>
-                  {questions.length>1 && <span style={{fontSize:12,color:'var(--danger)',cursor:'pointer'}} onClick={()=>removeQ(qi)}>✕ 刪除</span>}
-                </div>
-              </div>
-              <input className="form-input" placeholder="輸入題目（可用 $\frac{3}{8}$ 表示分數）" value={q.text}
-                onChange={e=>updateQ(qi,'text',e.target.value)} style={{marginBottom:6}}/>
-              {q.text && <div style={{fontSize:12,color:'var(--ink2)',marginBottom:10,padding:'4px 8px',background:'#f9f8f6',borderRadius:6}}>
-                預覽：<MathText text={q.text}/>
-              </div>}
-              <div className="options-grid">
-                {ABCD.map((lbl,oi)=>(
-                  <div key={oi} className="option-row">
-                    <span className="opt-label">{lbl}.</span>
-                    <input className="form-input" style={{fontSize:13,padding:'7px 10px'}} placeholder={`選項 ${lbl}`}
-                      value={q.options[oi]} onChange={e=>updateOpt(qi,oi,e.target.value)}/>
-                    <input type="radio" style={{accentColor:'var(--accent)',width:16,height:16,cursor:'pointer'}}
-                      name={`c_${qi}`} checked={q.correct===oi} onChange={()=>updateQ(qi,'correct',oi)} id={`r_${qi}_${oi}`}/>
-                    <label style={{fontSize:11,color:'var(--ink2)',cursor:'pointer'}} htmlFor={`r_${qi}_${oi}`}>✓正確</label>
-                  </div>
-                ))}
-              </div>
-              <div style={{display:'flex',flexWrap:'wrap',gap:6}}>
-                <button className="hint-toggle" onClick={()=>toggleField(qi,'showHint')}>{q.showHint?'▼':'▶'} 💡 提示</button>
-                <button className="hint-toggle" style={{borderColor:'#b7e4c7',color:'var(--accent)'}} onClick={()=>toggleField(qi,'showExpl')}>{q.showExpl?'▼':'▶'} 📖 解析</button>
-              </div>
-              {q.showHint && <div className="hint-area" style={{marginTop:10}}>
-                <div className="hint-area-title">💡 提示（學生作答中可主動查看）</div>
-                <textarea className="form-input" style={{resize:'vertical',minHeight:56,fontSize:13}}
-                  placeholder="例：分母是全部份數，分子是已吃的份數" value={q.hint} onChange={e=>updateQ(qi,'hint',e.target.value)}/>
-              </div>}
-              {q.showExpl && <div className="expl-area" style={{marginTop:8}}>
-                <div className="expl-area-title">📖 解析（提交後才顯示）</div>
-                <textarea className="form-input" style={{resize:'vertical',minHeight:72,fontSize:13}}
-                  placeholder="例：全部8份（分母），吃了3份（分子），所以是3/8" value={q.explanation} onChange={e=>updateQ(qi,'explanation',e.target.value)}/>
-              </div>}
-            </div>
+            <QuestionEditorCard key={qi} q={q} qi={qi} total={questions.length}
+              updateQ={updateQ} updateOpt={updateOpt} toggleField={toggleField} removeQ={removeQ}/>
           ))}
           <button className="btn btn-secondary btn-sm" onClick={addQ}>＋ 新增題目</button>
+          <BatchPasteSection appendMode={true} onImport={parsed => setQuestions(prev=>[...prev,...parsed])}/>
         </div>
 
         <div style={{marginTop:24,display:'flex',justifyContent:'flex-end',gap:10}}>
