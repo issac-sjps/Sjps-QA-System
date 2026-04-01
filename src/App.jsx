@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react'
+import React, { useState, useEffect, useMemo, useRef } from 'react'
 import { auth, db, googleProvider } from './firebase.js'
 import { signInWithPopup, signOut, onAuthStateChanged } from 'firebase/auth'
 import { collection, addDoc, getDocs, getDoc, doc, deleteDoc, setDoc, query, where, serverTimestamp } from 'firebase/firestore'
@@ -424,6 +424,27 @@ tr:hover td{background:#f9f8f6}
 .qr-img{display:block;margin:0 auto;border-radius:8px;image-rendering:pixelated}
 .float-top-btn{position:fixed;bottom:28px;right:20px;width:44px;height:44px;border-radius:50%;background:var(--accent);color:white;border:none;font-size:20px;cursor:pointer;box-shadow:0 4px 16px rgba(0,0,0,.2);display:flex;align-items:center;justify-content:center;z-index:50;transition:all .2s;line-height:1}
 .float-top-btn:hover{background:#235c42;transform:translateY(-2px);box-shadow:0 6px 20px rgba(0,0,0,.25)}
+/* Whiteboard */
+.wb-overlay{position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:500;display:flex;flex-direction:column}
+.wb-header{background:#1a1714;padding:10px 16px;display:flex;align-items:center;gap:12px;flex-shrink:0;flex-wrap:wrap}
+.wb-title{color:white;font-size:14px;font-weight:700;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.wb-question-bar{background:#2d2a26;padding:10px 16px;color:rgba(255,255,255,.9);font-size:14px;font-weight:600;line-height:1.6;flex-shrink:0}
+.wb-canvas-wrap{flex:1;position:relative;overflow:hidden;background:white}
+.wb-canvas{display:block;cursor:crosshair;touch-action:none}
+.wb-toolbar{background:#1a1714;padding:8px 16px;display:flex;align-items:center;gap:6px;flex-shrink:0;flex-wrap:wrap}
+.wb-tool-btn{width:36px;height:36px;border-radius:8px;border:2px solid transparent;background:rgba(255,255,255,.1);color:white;font-size:16px;cursor:pointer;display:flex;align-items:center;justify-content:center;transition:all .15s;flex-shrink:0}
+.wb-tool-btn:hover{background:rgba(255,255,255,.2)}
+.wb-tool-btn.active{background:var(--accent);border-color:var(--accent2)}
+.wb-tool-btn.danger{background:#c1440e}
+.wb-color-btn{width:24px;height:24px;border-radius:50%;border:3px solid transparent;cursor:pointer;transition:all .15s;flex-shrink:0}
+.wb-color-btn.active{border-color:white;transform:scale(1.2)}
+.wb-sep{width:1px;height:28px;background:rgba(255,255,255,.15);flex-shrink:0}
+.wb-size-slider{width:80px;accent-color:var(--accent2)}
+.wb-label{font-size:11px;color:rgba(255,255,255,.5);white-space:nowrap}
+.wb-review-btn{display:inline-flex;align-items:center;gap:5px;padding:5px 12px;border-radius:6px;background:#2d2a26;color:rgba(255,255,255,.9);border:1.5px solid rgba(255,255,255,.2);font-size:12px;font-weight:600;cursor:pointer;font-family:'Noto Sans TC',sans-serif;transition:all .15s}
+.wb-review-btn:hover{background:var(--accent);border-color:var(--accent)}
+.start-review-btn{display:inline-flex;align-items:center;gap:5px;padding:5px 12px;border-radius:6px;background:#2d2a26;color:white;border:1.5px solid #4a4540;font-size:12px;font-weight:600;cursor:pointer;font-family:'Noto Sans TC',sans-serif;transition:all .15s;white-space:nowrap}
+.start-review-btn:hover{background:var(--accent);border-color:var(--accent)}
 .unanswered-highlight{animation:pulse-border .6s ease 2;border-color:var(--danger)!important}
 @keyframes pulse-border{0%,100%{box-shadow:none}50%{box-shadow:0 0 0 4px rgba(193,68,14,.3)}}
 @media(max-width:768px){
@@ -1866,6 +1887,372 @@ function Results({ quizId }) {
   )
 }
 
+// ─── Whiteboard Modal ─────────────────────────────────────────────────────────
+function WhiteboardModal({ question, questionIndex, onClose }) {
+  const canvasRef = useRef(null)
+  const [tool, setTool] = useState('pen')       // pen|highlighter|eraser|line|rect|circle|text|arrow
+  const [color, setColor] = useState('#1a1714')
+  const [lineWidth, setLineWidth] = useState(3)
+  const [showGrid, setShowGrid] = useState(false)
+  const [showAxes, setShowAxes] = useState(false)
+  const [history, setHistory] = useState([])
+  const [redoStack, setRedoStack] = useState([])
+  const drawing = useRef(false)
+  const startPt = useRef({x:0,y:0})
+  const snapshot = useRef(null)
+  // Draggable question card
+  const [cardPos, setCardPos] = useState({x:16,y:16})
+  const [cardCollapsed, setCardCollapsed] = useState(false)
+  const dragging = useRef(false)
+  const dragOffset = useRef({x:0,y:0})
+
+  const COLORS = ['#1a1714','#c1440e','#2d6a4f','#1a6fb5','#9b59b6','#e67e22','#ffffff','#f5f3ef']
+
+  // Setup canvas
+  useEffect(() => {
+    const canvas = canvasRef.current
+    if (!canvas) return
+    canvas.width = canvas.offsetWidth
+    canvas.height = canvas.offsetHeight
+    const ctx = canvas.getContext('2d')
+    ctx.fillStyle = '#ffffff'
+    ctx.fillRect(0,0,canvas.width,canvas.height)
+    drawGrid(ctx, canvas)
+    saveToHistory()
+  }, [showGrid, showAxes])
+
+  const drawGrid = (ctx, canvas) => {
+    if (!showGrid && !showAxes) return
+    ctx.save()
+    if (showGrid) {
+      ctx.strokeStyle = '#e8e4df'
+      ctx.lineWidth = 0.5
+      for (let x = 0; x < canvas.width; x += 40) {
+        ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x,canvas.height); ctx.stroke()
+      }
+      for (let y = 0; y < canvas.height; y += 40) {
+        ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(canvas.width,y); ctx.stroke()
+      }
+    }
+    if (showAxes) {
+      const cx = canvas.width/2, cy = canvas.height/2
+      ctx.strokeStyle = '#a0a0a0'; ctx.lineWidth = 1.5
+      // x axis
+      ctx.beginPath(); ctx.moveTo(0,cy); ctx.lineTo(canvas.width,cy); ctx.stroke()
+      // y axis
+      ctx.beginPath(); ctx.moveTo(cx,0); ctx.lineTo(cx,canvas.height); ctx.stroke()
+      // ticks
+      ctx.fillStyle = '#888'; ctx.font = '11px monospace'
+      for (let i = -10; i <= 10; i++) {
+        if (i === 0) continue
+        const px = cx + i*40, py = cy + i*40
+        ctx.beginPath(); ctx.moveTo(px,cy-4); ctx.lineTo(px,cy+4); ctx.stroke()
+        ctx.beginPath(); ctx.moveTo(cx-4,py); ctx.lineTo(cx+4,py); ctx.stroke()
+        if (Math.abs(i) <= 5) {
+          ctx.fillText(i, px-6, cy+16)
+          ctx.fillText(-i, cx+8, py+4)
+        }
+      }
+      // arrows
+      ctx.fillStyle = '#a0a0a0'
+      ctx.beginPath(); ctx.moveTo(canvas.width,cy); ctx.lineTo(canvas.width-10,cy-5); ctx.lineTo(canvas.width-10,cy+5); ctx.fill()
+      ctx.beginPath(); ctx.moveTo(cx,0); ctx.lineTo(cx-5,10); ctx.lineTo(cx+5,10); ctx.fill()
+    }
+    ctx.restore()
+  }
+
+  const getPos = (e) => {
+    const canvas = canvasRef.current
+    const rect = canvas.getBoundingClientRect()
+    const touch = e.touches?.[0] || e
+    return { x: touch.clientX - rect.left, y: touch.clientY - rect.top }
+  }
+
+  const saveToHistory = () => {
+    const canvas = canvasRef.current
+    if (!canvas) return
+    setHistory(h => [...h.slice(-30), canvas.toDataURL()])
+    setRedoStack([])
+  }
+
+  const undo = () => {
+    if (history.length < 2) return
+    const newHistory = [...history]
+    const last = newHistory.pop()
+    setRedoStack(r => [last, ...r])
+    setHistory(newHistory)
+    const img = new Image()
+    img.src = newHistory[newHistory.length-1]
+    img.onload = () => {
+      const canvas = canvasRef.current
+      const ctx = canvas.getContext('2d')
+      ctx.clearRect(0,0,canvas.width,canvas.height)
+      ctx.drawImage(img,0,0)
+    }
+  }
+
+  const redo = () => {
+    if (!redoStack.length) return
+    const [first, ...rest] = redoStack
+    setRedoStack(rest)
+    setHistory(h => [...h, first])
+    const img = new Image()
+    img.src = first
+    img.onload = () => {
+      const canvas = canvasRef.current
+      const ctx = canvas.getContext('2d')
+      ctx.clearRect(0,0,canvas.width,canvas.height)
+      ctx.drawImage(img,0,0)
+    }
+  }
+
+  const clearCanvas = () => {
+    const canvas = canvasRef.current
+    const ctx = canvas.getContext('2d')
+    ctx.fillStyle = '#ffffff'
+    ctx.fillRect(0,0,canvas.width,canvas.height)
+    drawGrid(ctx, canvas)
+    saveToHistory()
+  }
+
+  const downloadCanvas = () => {
+    const canvas = canvasRef.current
+    const a = document.createElement('a')
+    a.href = canvas.toDataURL('image/png')
+    a.download = `白板_第${questionIndex+1}題.png`
+    a.click()
+  }
+
+  const onMouseDown = (e) => {
+    e.preventDefault()
+    const canvas = canvasRef.current
+    const ctx = canvas.getContext('2d')
+    const pos = getPos(e)
+    drawing.current = true
+    startPt.current = pos
+    snapshot.current = ctx.getImageData(0,0,canvas.width,canvas.height)
+
+    if (tool === 'text') {
+      const text = prompt('輸入文字：')
+      if (text) {
+        ctx.font = `${lineWidth * 6 + 14}px 'Noto Sans TC', sans-serif`
+        ctx.fillStyle = color
+        ctx.fillText(text, pos.x, pos.y)
+        saveToHistory()
+      }
+      drawing.current = false
+      return
+    }
+
+    ctx.beginPath()
+    ctx.moveTo(pos.x, pos.y)
+    ctx.strokeStyle = tool === 'highlighter' ? color + '66' : color
+    ctx.lineWidth = tool === 'eraser' ? lineWidth * 8 : lineWidth
+    ctx.lineCap = 'round'
+    ctx.lineJoin = 'round'
+    ctx.globalCompositeOperation = tool === 'eraser' ? 'destination-out' : 'source-over'
+    if (tool === 'highlighter') ctx.lineWidth = lineWidth * 6
+  }
+
+  const onMouseMove = (e) => {
+    if (!drawing.current) return
+    e.preventDefault()
+    const canvas = canvasRef.current
+    const ctx = canvas.getContext('2d')
+    const pos = getPos(e)
+
+    if (tool === 'pen' || tool === 'highlighter' || tool === 'eraser') {
+      ctx.lineTo(pos.x, pos.y)
+      ctx.stroke()
+    } else {
+      // Shape tools: restore snapshot and redraw preview
+      ctx.putImageData(snapshot.current, 0, 0)
+      ctx.beginPath()
+      ctx.strokeStyle = color
+      ctx.lineWidth = lineWidth
+      ctx.lineCap = 'round'
+      ctx.globalCompositeOperation = 'source-over'
+      const {x:sx, y:sy} = startPt.current
+      if (tool === 'line') {
+        ctx.moveTo(sx,sy); ctx.lineTo(pos.x,pos.y); ctx.stroke()
+      } else if (tool === 'rect') {
+        ctx.strokeRect(sx,sy,pos.x-sx,pos.y-sy)
+      } else if (tool === 'circle') {
+        const rx = Math.abs(pos.x-sx)/2, ry = Math.abs(pos.y-sy)/2
+        ctx.ellipse(sx+(pos.x-sx)/2, sy+(pos.y-sy)/2, rx, ry, 0, 0, Math.PI*2)
+        ctx.stroke()
+      } else if (tool === 'arrow') {
+        ctx.moveTo(sx,sy); ctx.lineTo(pos.x,pos.y); ctx.stroke()
+        const angle = Math.atan2(pos.y-sy,pos.x-sx)
+        const headLen = 15
+        ctx.beginPath()
+        ctx.moveTo(pos.x,pos.y)
+        ctx.lineTo(pos.x-headLen*Math.cos(angle-0.4), pos.y-headLen*Math.sin(angle-0.4))
+        ctx.moveTo(pos.x,pos.y)
+        ctx.lineTo(pos.x-headLen*Math.cos(angle+0.4), pos.y-headLen*Math.sin(angle+0.4))
+        ctx.stroke()
+      }
+    }
+  }
+
+  const onMouseUp = (e) => {
+    if (!drawing.current) return
+    drawing.current = false
+    const canvas = canvasRef.current
+    const ctx = canvas.getContext('2d')
+    ctx.globalCompositeOperation = 'source-over'
+    saveToHistory()
+  }
+
+  // Question card drag
+  const onCardMouseDown = (e) => {
+    dragging.current = true
+    dragOffset.current = { x: e.clientX - cardPos.x, y: e.clientY - cardPos.y }
+    e.stopPropagation()
+  }
+  useEffect(() => {
+    const move = (e) => {
+      if (!dragging.current) return
+      setCardPos({ x: e.clientX - dragOffset.current.x, y: e.clientY - dragOffset.current.y })
+    }
+    const up = () => { dragging.current = false }
+    window.addEventListener('mousemove', move)
+    window.addEventListener('mouseup', up)
+    return () => { window.removeEventListener('mousemove', move); window.removeEventListener('mouseup', up) }
+  }, [])
+
+  useEffect(() => {
+    const handleKey = (e) => {
+      if ((e.metaKey||e.ctrlKey) && e.key==='z') { e.preventDefault(); undo() }
+      if ((e.metaKey||e.ctrlKey) && e.key==='y') { e.preventDefault(); redo() }
+    }
+    window.addEventListener('keydown', handleKey)
+    return () => window.removeEventListener('keydown', handleKey)
+  }, [history, redoStack])
+
+  const tools = [
+    {id:'pen',     label:'✏️', title:'畫筆'},
+    {id:'highlighter', label:'🖊️', title:'螢光筆'},
+    {id:'eraser',  label:'🧹', title:'橡皮擦'},
+    {id:'line',    label:'╱',  title:'直線'},
+    {id:'arrow',   label:'→',  title:'箭頭'},
+    {id:'rect',    label:'⬜', title:'矩形'},
+    {id:'circle',  label:'⭕', title:'圓形/橢圓'},
+    {id:'text',    label:'T',  title:'文字'},
+  ]
+
+  return (
+    <div style={{position:'fixed',inset:0,background:'#1a1714',zIndex:500,display:'flex',flexDirection:'column'}}>
+      {/* Top toolbar */}
+      <div style={{background:'#252220',padding:'8px 12px',display:'flex',alignItems:'center',gap:8,flexWrap:'wrap',flexShrink:0,borderBottom:'1px solid #3a3530'}}>
+        {/* Title */}
+        <div style={{color:'white',fontSize:13,fontWeight:700,marginRight:4,flexShrink:0}}>
+          🖊 第{questionIndex+1}題 白板檢討
+        </div>
+        <div style={{width:1,height:24,background:'#3a3530',flexShrink:0}}/>
+
+        {/* Tools */}
+        {tools.map(t=>(
+          <button key={t.id} onClick={()=>setTool(t.id)} title={t.title}
+            style={{width:34,height:34,borderRadius:6,border:'none',cursor:'pointer',fontSize:15,
+              background:tool===t.id?'var(--accent)':'#3a3530',color:tool===t.id?'white':'#ccc',
+              display:'flex',alignItems:'center',justifyContent:'center',fontWeight:700,flexShrink:0}}>
+            {t.label}
+          </button>
+        ))}
+        <div style={{width:1,height:24,background:'#3a3530',flexShrink:0}}/>
+
+        {/* Color palette */}
+        {COLORS.map(c=>(
+          <button key={c} onClick={()=>setColor(c)}
+            style={{width:24,height:24,borderRadius:'50%',border:color===c?'2.5px solid white':'2px solid #555',
+              background:c,cursor:'pointer',flexShrink:0,transition:'transform .1s',
+              transform:color===c?'scale(1.25)':'scale(1)'}}>
+          </button>
+        ))}
+        <div style={{width:1,height:24,background:'#3a3530',flexShrink:0}}/>
+
+        {/* Line width */}
+        <div style={{display:'flex',alignItems:'center',gap:6,flexShrink:0}}>
+          <span style={{color:'#aaa',fontSize:12}}>粗細</span>
+          <input type="range" min="1" max="12" value={lineWidth} onChange={e=>setLineWidth(+e.target.value)}
+            style={{width:72,accentColor:'var(--accent2)'}}/>
+          <div style={{width:lineWidth*2+2,height:lineWidth*2+2,borderRadius:'50%',background:color,flexShrink:0}}/>
+        </div>
+        <div style={{width:1,height:24,background:'#3a3530',flexShrink:0}}/>
+
+        {/* Grid / Axes */}
+        {[['格線',showGrid,setShowGrid],['座標軸',showAxes,setShowAxes]].map(([label,val,set])=>(
+          <button key={label} onClick={()=>set(v=>!v)}
+            style={{padding:'4px 10px',borderRadius:6,border:'none',cursor:'pointer',fontSize:12,fontWeight:600,
+              background:val?'var(--accent)':'#3a3530',color:val?'white':'#ccc',flexShrink:0}}>
+            {label}
+          </button>
+        ))}
+        <div style={{width:1,height:24,background:'#3a3530',flexShrink:0}}/>
+
+        {/* Actions */}
+        <button onClick={undo} title="復原 (Ctrl+Z)"
+          style={{padding:'4px 10px',borderRadius:6,border:'none',cursor:'pointer',fontSize:12,background:'#3a3530',color:'#ccc',flexShrink:0}}>↩ 復原</button>
+        <button onClick={redo} title="重做 (Ctrl+Y)"
+          style={{padding:'4px 10px',borderRadius:6,border:'none',cursor:'pointer',fontSize:12,background:'#3a3530',color:'#ccc',flexShrink:0}}>↪ 重做</button>
+        <button onClick={clearCanvas}
+          style={{padding:'4px 10px',borderRadius:6,border:'none',cursor:'pointer',fontSize:12,background:'#3a3530',color:'#ff9a8a',flexShrink:0}}>🗑 清除</button>
+        <button onClick={downloadCanvas}
+          style={{padding:'4px 10px',borderRadius:6,border:'none',cursor:'pointer',fontSize:12,background:'#3a3530',color:'#7dd3b0',flexShrink:0}}>📸 截圖</button>
+
+        <div style={{flex:1}}/>
+        <button onClick={onClose}
+          style={{padding:'4px 14px',borderRadius:6,border:'none',cursor:'pointer',fontSize:13,fontWeight:700,background:'#c1440e',color:'white',flexShrink:0}}>✕ 關閉</button>
+      </div>
+
+      {/* Canvas area */}
+      <div style={{flex:1,position:'relative',overflow:'hidden'}}>
+        <canvas ref={canvasRef} style={{width:'100%',height:'100%',cursor:tool==='eraser'?'cell':tool==='text'?'text':'crosshair',display:'block',touchAction:'none'}}
+          onMouseDown={onMouseDown} onMouseMove={onMouseMove} onMouseUp={onMouseUp} onMouseLeave={onMouseUp}
+          onTouchStart={onMouseDown} onTouchMove={onMouseMove} onTouchEnd={onMouseUp}/>
+
+        {/* Draggable question card */}
+        <div style={{position:'absolute',left:cardPos.x,top:cardPos.y,width:340,background:'rgba(255,255,255,0.97)',
+          borderRadius:10,boxShadow:'0 8px 32px rgba(0,0,0,.4)',border:'1px solid rgba(255,255,255,.2)',
+          userSelect:'none',overflow:'hidden'}}>
+          {/* Card header (drag handle) */}
+          <div onMouseDown={onCardMouseDown}
+            style={{background:'#252220',padding:'8px 12px',cursor:'grab',display:'flex',alignItems:'center',justifyContent:'space-between'}}>
+            <span style={{color:'#aaa',fontSize:11,fontWeight:700,letterSpacing:'.08em'}}>第 {questionIndex+1} 題 ▸ 拖動移動</span>
+            <button onClick={()=>setCardCollapsed(c=>!c)}
+              style={{background:'none',border:'none',cursor:'pointer',color:'#aaa',fontSize:16,lineHeight:1,padding:'0 2px'}}>
+              {cardCollapsed?'▼':'▲'}
+            </button>
+          </div>
+          {!cardCollapsed && (
+            <div style={{padding:'12px 14px'}}>
+              <div style={{fontSize:14,fontWeight:700,lineHeight:1.7,marginBottom:10,color:'#1a1714'}}>
+                <MathText text={question.text}/>
+              </div>
+              <div style={{display:'flex',flexDirection:'column',gap:5}}>
+                {question.options.map((opt,oi)=>(
+                  <div key={oi} style={{display:'flex',alignItems:'center',gap:8,padding:'5px 10px',borderRadius:6,
+                    background:oi===question.correct?'#e8f5ee':'#f9f8f6',
+                    border:oi===question.correct?'1.5px solid #52b788':'1px solid #e2ddd8'}}>
+                    <span style={{fontWeight:700,fontSize:12,color:oi===question.correct?'#2d6a4f':'#6b6560',flexShrink:0}}>{ABCD[oi]}.</span>
+                    <span style={{fontSize:13,color:'#1a1714'}}><MathText text={opt}/></span>
+                    {oi===question.correct && <span style={{marginLeft:'auto',fontSize:11,color:'#2d6a4f',fontWeight:700}}>✓</span>}
+                  </div>
+                ))}
+              </div>
+              {question.explanation && (
+                <div style={{marginTop:8,padding:'7px 10px',background:'#f0f9f4',borderRadius:6,fontSize:12,color:'#2d6a4f',lineHeight:1.6}}>
+                  📖 <MathText text={question.explanation}/>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
 // ─── Analytics ────────────────────────────────────────────────────────────────
 function Analytics({ quizId }) {
   const [quiz, setQuiz] = useState(null)
@@ -1873,6 +2260,7 @@ function Analytics({ quizId }) {
   const [loading, setLoading] = useState(true)
   const [tab, setTab] = useState('chart')
   const [shownStudents, setShownStudents] = useState({})
+  const [whiteboardQ, setWhiteboardQ] = useState(null) // { q, qi }
 
   useEffect(() => {
     async function load() {
@@ -2025,8 +2413,12 @@ function Analytics({ quizId }) {
                       📖 <MathText text={s.q.explanation}/>
                     </div>
                   )}
-                  <button className="btn btn-secondary btn-sm" onClick={()=>setShownStudents(prev=>({...prev,[key]:!prev[key]}))}>
+                  <button className="btn btn-secondary btn-sm" onClick={()=>setShownStudents(prev=>({...prev,[key]:!prev[key]}))} style={{marginRight:8}}>
                     {shownStudents[key]?'▼ 隱藏':'▶ 顯示答錯學生'} ({s.wrongStudents.length}人)
+                  </button>
+                  <button className="btn btn-sm" onClick={()=>setWhiteboardQ({q:s.q,qi})}
+                    style={{background:'#1a1714',color:'white',border:'none'}}>
+                    🖊 白板檢討
                   </button>
                   {shownStudents[key] && (
                     <div className="wrong-seats">
@@ -2041,6 +2433,13 @@ function Analytics({ quizId }) {
             })}
           </div>
         </div>
+      )}
+      {whiteboardQ && (
+        <WhiteboardModal
+          question={whiteboardQ.q}
+          questionIndex={whiteboardQ.qi}
+          onClose={()=>setWhiteboardQ(null)}
+        />
       )}
     </div>
   )
