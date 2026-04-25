@@ -12,7 +12,7 @@ const ADMIN_EMAILS = ['issac@sjps.kh.edu.tw']
 const isAdmin = (u) => u && ADMIN_EMAILS.includes(u.email)
 const ABCD = ['A','B','C','D']
 const padSeat = (s) => String(parseInt(String(s).trim()) || 0).padStart(2, '0')
-const emptyQ = () => ({text:'',options:['','','',''],correct:0,points:10,hint:'',explanation:'',showHint:false,showExpl:false})
+const emptyQ = () => ({text:'',options:['','','',''],correct:0,points:10,hint:'',explanation:'',showHint:false,showExpl:false,images:[]})
 
 // ─── Hash Router ──────────────────────────────────────────────────────────────
 function getHash() { return window.location.hash.replace('#','') || '/' }
@@ -72,6 +72,7 @@ function parseQuestionRows(rows) {
     hint: String(r[7]||'').trim(),
     explanation: String(r[8]||'').trim(),
     showHint: !!r[7], showExpl: !!r[8],
+    images: [],
   }))
 }
 function parsePasteText(text) {
@@ -266,6 +267,18 @@ tr:hover td{background:#f9f8f6}
 .edit-modal-body{flex:1;overflow-y:auto;padding:24px}
 /* Quiz editor */
 .q-editor{border:1.5px solid var(--border);border-radius:10px;padding:18px;margin-bottom:12px;background:white}
+.img-upload-zone{border:2px dashed var(--border);border-radius:8px;padding:14px;text-align:center;cursor:pointer;transition:all .2s;background:#fafaf9;margin-top:10px}
+.img-upload-zone:hover,.img-upload-zone.drag-over{border-color:var(--accent);background:#f0f9f4}
+.img-upload-zone input[type=file]{display:none}
+.img-thumbs{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
+.img-thumb-wrap{position:relative;border-radius:6px;overflow:hidden;border:1.5px solid var(--border)}
+.img-thumb-wrap img{display:block;height:80px;width:auto;max-width:140px;object-fit:cover}
+.img-thumb-del{position:absolute;top:3px;right:3px;width:20px;height:20px;border-radius:50%;background:rgba(0,0,0,.6);color:white;border:none;cursor:pointer;font-size:11px;display:flex;align-items:center;justify-content:center;line-height:1}
+.img-thumb-del:hover{background:var(--danger)}
+.q-images-display{display:flex;gap:10px;flex-wrap:wrap;margin:10px 0}
+.q-images-display img{max-width:100%;max-height:240px;border-radius:8px;border:1px solid var(--border);object-fit:contain;cursor:pointer}
+.img-lightbox{position:fixed;inset:0;background:rgba(0,0,0,.85);z-index:600;display:flex;align-items:center;justify-content:center;cursor:zoom-out}
+.img-lightbox img{max-width:90vw;max-height:90vh;border-radius:8px;object-fit:contain}
 .q-preview-panel{background:#f8f7ff;border:1.5px solid #c5bff0;border-radius:8px;padding:16px;margin-top:10px}
 .q-preview-title{font-size:11px;font-weight:700;color:#5b4fcf;letter-spacing:.08em;text-transform:uppercase;margin-bottom:10px}
 .q-preview-question{font-size:15px;font-weight:600;color:var(--ink);line-height:1.7;margin-bottom:12px}
@@ -509,6 +522,117 @@ function ProfileModal({ user, displayName, onSave, onCancel }) {
 }
 
 // ─── QuestionEditorCard ───────────────────────────────────────────────────────
+// ─── Image Uploader ───────────────────────────────────────────────────────────
+function ImageUploader({ images = [], onChange, maxImages = 3 }) {
+  const [dragOver, setDragOver] = useState(false)
+  const inputRef = useRef(null)
+
+  const compress = (file) => new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = (e) => {
+      const img = new Image()
+      img.onload = () => {
+        const MAX = 800
+        let w = img.width, h = img.height
+        if (w > MAX || h > MAX) {
+          if (w > h) { h = Math.round(h * MAX / w); w = MAX }
+          else       { w = Math.round(w * MAX / h); h = MAX }
+        }
+        const canvas = document.createElement('canvas')
+        canvas.width = w; canvas.height = h
+        canvas.getContext('2d').drawImage(img, 0, 0, w, h)
+        const b64 = canvas.toDataURL('image/jpeg', 0.72)
+        const kb = Math.round(b64.length * 0.75 / 1024)
+        if (kb > 700) { alert(`圖片太大（${kb}KB），請縮小後再試`); reject(); return }
+        resolve(b64)
+      }
+      img.src = e.target.result
+    }
+    reader.readAsDataURL(file)
+  })
+
+  const addImages = async (files) => {
+    const remaining = maxImages - images.length
+    if (remaining <= 0) { alert(`每題最多 ${maxImages} 張圖片`); return }
+    const toAdd = Array.from(files).slice(0, remaining).filter(f => f.type.startsWith('image/'))
+    try {
+      const b64s = await Promise.all(toAdd.map(compress))
+      onChange([...images, ...b64s])
+    } catch {}
+  }
+
+  const handleFiles = (e) => addImages(e.target.files)
+  const handleDrop = (e) => { e.preventDefault(); setDragOver(false); addImages(e.dataTransfer.files) }
+  const removeImg = (i) => onChange(images.filter((_,idx) => idx !== i))
+
+  // Ctrl+V paste
+  useEffect(() => {
+    const handler = async (e) => {
+      if (!e.clipboardData?.files?.length) return
+      const files = Array.from(e.clipboardData.files).filter(f => f.type.startsWith('image/'))
+      if (files.length) { e.preventDefault(); addImages(files) }
+    }
+    window.addEventListener('paste', handler)
+    return () => window.removeEventListener('paste', handler)
+  }, [images])
+
+  return (
+    <div style={{marginTop:10}}>
+      <div style={{fontSize:12,fontWeight:600,color:'var(--ink2)',marginBottom:6,display:'flex',alignItems:'center',gap:8}}>
+        📷 題目圖片（選填，最多 {maxImages} 張）
+        <span style={{fontWeight:400,fontSize:11}}>支援拖曳 / 點擊 / Ctrl+V 貼上</span>
+      </div>
+
+      {images.length > 0 && (
+        <div className="img-thumbs">
+          {images.map((src,i) => (
+            <div key={i} className="img-thumb-wrap">
+              <img src={src} alt={`圖片${i+1}`}/>
+              <button className="img-thumb-del" onClick={()=>removeImg(i)} title="刪除">✕</button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {images.length < maxImages && (
+        <label
+          className={`img-upload-zone ${dragOver?'drag-over':''}`}
+          onDragOver={e=>{ e.preventDefault(); setDragOver(true) }}
+          onDragLeave={()=>setDragOver(false)}
+          onDrop={handleDrop}>
+          <input type="file" accept="image/*" multiple ref={inputRef} onChange={handleFiles}/>
+          <div style={{fontSize:13,color:'var(--ink2)'}}>
+            {dragOver ? '放開以上傳 📷' : '📷 拖曳圖片到這裡，或點擊選擇'}
+          </div>
+          <div style={{fontSize:11,color:'var(--ink2)',marginTop:3}}>
+            支援 PNG、JPG、GIF · 自動壓縮至 800px · 每張 &lt;700KB
+          </div>
+        </label>
+      )}
+    </div>
+  )
+}
+
+// ─── Question Images Display (student-facing) ─────────────────────────────────
+function QuestionImages({ images }) {
+  const [lightbox, setLightbox] = useState(null)
+  if (!images?.length) return null
+  return (
+    <>
+      <div className="q-images-display">
+        {images.map((src,i) => (
+          <img key={i} src={src} alt={`圖片${i+1}`} onClick={()=>setLightbox(src)} title="點擊放大"/>
+        ))}
+      </div>
+      {lightbox && (
+        <div className="img-lightbox" onClick={()=>setLightbox(null)}>
+          <img src={lightbox} alt="放大圖"/>
+        </div>
+      )}
+    </>
+  )
+}
+
 function PreviewModal({ q, qi, onClose }) {
   return (
     <div className="modal-overlay" onClick={onClose}>
@@ -520,6 +644,7 @@ function PreviewModal({ q, qi, onClose }) {
         <div className="q-preview-question">
           {q.text ? <MathText text={q.text}/> : <span style={{color:'var(--ink2)',fontStyle:'italic'}}>尚未輸入題目</span>}
         </div>
+        <QuestionImages images={q.images}/>
         <div className="q-preview-opts" style={{margin:'12px 0'}}>
           {q.options.map((opt,oi)=>(
             <div key={oi} className={`q-preview-opt ${oi===q.correct?'is-correct':'not-correct'}`}>
@@ -576,7 +701,12 @@ function QuestionEditorCard({ q, qi, total, updateQ, updateOpt, toggleField, rem
           </div>
         ))}
       </div>
-      <div style={{display:'flex',flexWrap:'wrap',gap:6}}>
+      <ImageUploader
+        images={q.images||[]}
+        onChange={imgs=>updateQ(qi,'images',imgs)}
+        maxImages={3}
+      />
+      <div style={{display:'flex',flexWrap:'wrap',gap:6,marginTop:10}}>
         <button className="hint-toggle" onClick={()=>toggleField(qi,'showHint')}>{q.showHint?'▼':'▶'} 💡 提示</button>
         <button className="hint-toggle" style={{borderColor:'#b7e4c7',color:'var(--accent)'}} onClick={()=>toggleField(qi,'showExpl')}>{q.showExpl?'▼':'▶'} 📖 解析</button>
       </div>
@@ -2227,9 +2357,18 @@ function WhiteboardModal({ question, questionIndex, onClose }) {
           </div>
           {!cardCollapsed && (
             <div style={{padding:'12px 14px'}}>
-              <div style={{fontSize:14,fontWeight:700,lineHeight:1.7,marginBottom:10,color:'#1a1714'}}>
+              <div style={{fontSize:14,fontWeight:700,lineHeight:1.7,marginBottom:6,color:'#1a1714'}}>
                 <MathText text={question.text}/>
               </div>
+              {question.images?.length > 0 && (
+                <div style={{display:'flex',gap:6,flexWrap:'wrap',marginBottom:8}}>
+                  {question.images.map((src,i) => (
+                    <img key={i} src={src} alt={`圖${i+1}`}
+                      style={{maxHeight:100,maxWidth:140,borderRadius:6,border:'1px solid #e2ddd8',objectFit:'contain',cursor:'pointer'}}
+                      onClick={()=>window.open(src,'_blank')}/>
+                  ))}
+                </div>
+              )}
               <div style={{display:'flex',flexDirection:'column',gap:5}}>
                 {question.options.map((opt,oi)=>(
                   <div key={oi} style={{display:'flex',alignItems:'center',gap:8,padding:'5px 10px',borderRadius:6,
@@ -2695,6 +2834,7 @@ function StudentQuiz({ quizId }) {
                       <span className={`result-badge ${isCorrect?'correct':'wrong'}`}>{isCorrect?'✓ 答對':'✗ 答錯'}</span>
                     </div>
                     <div className="sq-text"><MathText text={q.text}/></div>
+                    <QuestionImages images={q.images}/>
                     <div className="sq-opts" style={{pointerEvents:'none'}}>
                       {q.options.map((opt,oi)=>{
                         let cls='revealed'
@@ -2800,6 +2940,7 @@ function StudentQuiz({ quizId }) {
                   )}
                 </div>
                 <div className="sq-text"><MathText text={q.text}/></div>
+                <QuestionImages images={q.images}/>
                 {q.hint&&shownHints[qi]&&<div className="hint-bubble"><div className="hint-bubble-title">💡 提示</div><MathText text={q.hint}/></div>}
                 <div className="sq-opts" style={{marginTop:q.hint&&shownHints[qi]?12:0}}>
                   {q.options.map((opt,oi)=>(
