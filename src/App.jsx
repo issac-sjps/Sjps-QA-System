@@ -267,13 +267,13 @@ tr:hover td{background:#f9f8f6}
 .edit-modal-body{flex:1;overflow-y:auto;padding:24px}
 /* Quiz editor */
 .q-editor{border:1.5px solid var(--border);border-radius:10px;padding:18px;margin-bottom:12px;background:white}
-.img-upload-zone{border:2px dashed var(--border);border-radius:8px;padding:14px;text-align:center;cursor:pointer;transition:all .2s;background:#fafaf9;margin-top:10px}
+.img-upload-zone{border:1.5px dashed var(--border);border-radius:8px;padding:8px 12px;cursor:pointer;transition:all .2s;background:#fafaf9;display:flex;align-items:center;gap:10px}
 .img-upload-zone:hover,.img-upload-zone.drag-over{border-color:var(--accent);background:#f0f9f4}
 .img-upload-zone input[type=file]{display:none}
-.img-thumbs{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
+.img-thumbs{display:flex;gap:6px;flex-wrap:wrap}
 .img-thumb-wrap{position:relative;border-radius:6px;overflow:hidden;border:1.5px solid var(--border)}
-.img-thumb-wrap img{display:block;height:80px;width:auto;max-width:140px;object-fit:cover}
-.img-thumb-del{position:absolute;top:3px;right:3px;width:20px;height:20px;border-radius:50%;background:rgba(0,0,0,.6);color:white;border:none;cursor:pointer;font-size:11px;display:flex;align-items:center;justify-content:center;line-height:1}
+.img-thumb-wrap img{display:block;height:56px;width:auto;max-width:100px;object-fit:cover}
+.img-thumb-del{position:absolute;top:2px;right:2px;width:16px;height:16px;border-radius:50%;background:rgba(0,0,0,.65);color:white;border:none;cursor:pointer;font-size:9px;display:flex;align-items:center;justify-content:center;line-height:1}
 .img-thumb-del:hover{background:var(--danger)}
 .q-images-display{display:flex;gap:10px;flex-wrap:wrap;margin:10px 0}
 .q-images-display img{max-width:100%;max-height:240px;border-radius:8px;border:1px solid var(--border);object-fit:contain;cursor:pointer}
@@ -577,12 +577,27 @@ function ImageUploader({ images = [], onChange, maxImages = 3 }) {
   }, [images])
 
   return (
-    <div style={{marginTop:10}}>
-      <div style={{fontSize:12,fontWeight:600,color:'var(--ink2)',marginBottom:6,display:'flex',alignItems:'center',gap:8}}>
-        📷 題目圖片（選填，最多 {maxImages} 張）
-        <span style={{fontWeight:400,fontSize:11}}>支援拖曳 / 點擊 / Ctrl+V 貼上</span>
+    <div style={{marginTop:8,padding:'8px 10px',background:'#f9f8f6',borderRadius:8,border:'1px solid var(--border)'}}>
+      {/* Header row */}
+      <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:images.length>0?8:0}}>
+        <span style={{fontSize:12,fontWeight:600,color:'var(--ink2)',flexShrink:0}}>📷 題目圖片</span>
+        <span style={{fontSize:11,color:'var(--ink2)'}}>（最多 {maxImages} 張，拖曳 / 點擊 / Ctrl+V）</span>
+        {images.length < maxImages && (
+          <label
+            className={`img-upload-zone ${dragOver?'drag-over':''}`}
+            style={{marginLeft:'auto',flexShrink:0,marginTop:0,padding:'4px 12px'}}
+            onDragOver={e=>{ e.preventDefault(); setDragOver(true) }}
+            onDragLeave={()=>setDragOver(false)}
+            onDrop={handleDrop}>
+            <input type="file" accept="image/*" multiple ref={inputRef} onChange={handleFiles}/>
+            <span style={{fontSize:12,color:dragOver?'var(--accent)':'var(--ink2)',whiteSpace:'nowrap'}}>
+              {dragOver ? '放開上傳' : '＋ 新增圖片'}
+            </span>
+          </label>
+        )}
       </div>
 
+      {/* Thumbnails row */}
       {images.length > 0 && (
         <div className="img-thumbs">
           {images.map((src,i) => (
@@ -591,23 +606,19 @@ function ImageUploader({ images = [], onChange, maxImages = 3 }) {
               <button className="img-thumb-del" onClick={()=>removeImg(i)} title="刪除">✕</button>
             </div>
           ))}
+          {images.length < maxImages && (
+            <label
+              className={`img-upload-zone ${dragOver?'drag-over':''}`}
+              style={{height:56,minWidth:60,marginTop:0,padding:'0 10px',display:'flex',alignItems:'center',justifyContent:'center',flexDirection:'column',gap:2}}
+              onDragOver={e=>{ e.preventDefault(); setDragOver(true) }}
+              onDragLeave={()=>setDragOver(false)}
+              onDrop={handleDrop}>
+              <input type="file" accept="image/*" multiple ref={inputRef} onChange={handleFiles}/>
+              <span style={{fontSize:16,color:'var(--ink2)'}}>＋</span>
+              <span style={{fontSize:10,color:'var(--ink2)'}}>新增</span>
+            </label>
+          )}
         </div>
-      )}
-
-      {images.length < maxImages && (
-        <label
-          className={`img-upload-zone ${dragOver?'drag-over':''}`}
-          onDragOver={e=>{ e.preventDefault(); setDragOver(true) }}
-          onDragLeave={()=>setDragOver(false)}
-          onDrop={handleDrop}>
-          <input type="file" accept="image/*" multiple ref={inputRef} onChange={handleFiles}/>
-          <div style={{fontSize:13,color:'var(--ink2)'}}>
-            {dragOver ? '放開以上傳 📷' : '📷 拖曳圖片到這裡，或點擊選擇'}
-          </div>
-          <div style={{fontSize:11,color:'var(--ink2)',marginTop:3}}>
-            支援 PNG、JPG、GIF · 自動壓縮至 800px · 每張 &lt;700KB
-          </div>
-        </label>
       )}
     </div>
   )
@@ -1707,9 +1718,25 @@ function CreateQuiz({ user }) {
     const reader = new FileReader()
     reader.onload = (ev) => {
       try {
-        const wb = XLSX.read(ev.target.result, {type:'binary'})
-        const rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], {header:1,raw:false,defval:''})
-        const parsed = parseQuestionRows(rows)
+        const wb = XLSX.read(ev.target.result, {type:'binary', cellText:true, cellDates:false})
+        const ws = wb.Sheets[wb.SheetNames[0]]
+        // Use raw:false but also check cellText (w property) for each cell
+        // to prevent fractions like 3/8 becoming 0.375
+        const rows = XLSX.utils.sheet_to_json(ws, {header:1, raw:false, defval:''})
+        // Also get raw sheet to access .w (formatted text) for each cell
+        const range = XLSX.utils.decode_range(ws['!ref'] || 'A1')
+        const textRows = []
+        for (let R = range.s.r; R <= range.e.r; R++) {
+          const row = []
+          for (let C = range.s.c; C <= range.e.c; C++) {
+            const addr = XLSX.utils.encode_cell({r:R, c:C})
+            const cell = ws[addr]
+            // Prefer formatted text (.w) over computed value to preserve "3/8" etc.
+            row.push(cell ? (cell.w !== undefined ? cell.w : String(cell.v ?? '')) : '')
+          }
+          textRows.push(row)
+        }
+        const parsed = parseQuestionRows(textRows)
         if (parsed.length) { setQuestions(parsed); setMode('manual'); setToast(`匯入 ${parsed.length} 道題目`); setTimeout(()=>setToast(''),2000) }
       } catch { alert('Excel 格式錯誤') }
     }
